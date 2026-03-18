@@ -65,7 +65,7 @@ struct MenuContentView: View {
     private var header: some View {
         HStack(alignment: .top) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("Codex 账号")
+                Text("Codex Switch")
                     .font(.system(size: 16, weight: .semibold))
                 if let active = store.activeAccount {
                     Text("当前：\(store.workspaceName(for: active))")

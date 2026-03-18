@@ -15,7 +15,9 @@ struct codexswitchApp: App {
         MenuBarExtra {
             MenuContentView(store: store)
         } label: {
-            Label("Codex", systemImage: store.statusIconName)
+            Image("MenuBarIcon")
+                .renderingMode(.template)
+                .accessibilityLabel("Codex")
         }
         .menuBarExtraStyle(.window)
 
