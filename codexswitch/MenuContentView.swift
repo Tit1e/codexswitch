@@ -12,6 +12,7 @@ struct MenuContentView: View {
     @State private var editingAccountKey: String?
     @State private var aliasDraft = ""
     @FocusState private var focusedAccountKey: String?
+    private let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
 
     var body: some View {
         VStack(spacing: 14) {
@@ -139,6 +140,12 @@ struct MenuContentView: View {
             }
 
             Spacer()
+
+            if let appVersion, !appVersion.isEmpty {
+                Text("v\(appVersion)")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
 
             Button("退出应用", role: .destructive) {
                 store.quit()
