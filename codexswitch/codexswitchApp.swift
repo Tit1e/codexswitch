@@ -9,9 +9,18 @@ import SwiftUI
 
 @main
 struct codexswitchApp: App {
+    @StateObject private var store = CodexAccountsStore()
+
     var body: some Scene {
-        WindowGroup {
-            ContentView()
+        MenuBarExtra {
+            MenuContentView(store: store)
+        } label: {
+            Label("Codex", systemImage: store.statusIconName)
+        }
+        .menuBarExtraStyle(.window)
+
+        Settings {
+            EmptyView()
         }
     }
 }
