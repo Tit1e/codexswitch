@@ -7,6 +7,12 @@
 
 import Foundation
 
+enum UsageHealthStatus: String, Codable {
+    case ok
+    case accountIssue = "account_issue"
+    case unknown
+}
+
 struct CodexRegistry: Codable {
     var schemaVersion: Int
     var activeAccountKey: String?
@@ -53,6 +59,8 @@ struct CodexAccount: Codable, Identifiable {
     var lastUsedAt: Int64?
     var lastUsage: RateLimitSnapshot?
     var lastUsageAt: Int64?
+    var lastUsageStatus: UsageHealthStatus?
+    var lastUsageErrorMessage: String?
     var lastLocalRollout: RolloutSignature?
 
     enum CodingKeys: String, CodingKey {
@@ -67,6 +75,8 @@ struct CodexAccount: Codable, Identifiable {
         case lastUsedAt = "last_used_at"
         case lastUsage = "last_usage"
         case lastUsageAt = "last_usage_at"
+        case lastUsageStatus = "last_usage_status"
+        case lastUsageErrorMessage = "last_usage_error_message"
         case lastLocalRollout = "last_local_rollout"
     }
 

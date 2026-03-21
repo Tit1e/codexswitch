@@ -11,6 +11,7 @@ struct MenuContentView: View {
     @ObservedObject var store: CodexAccountsStore
     @State private var editingAccountKey: String?
     @State private var aliasDraft = ""
+    @State private var pendingAction: PendingAction?
     @FocusState private var focusedAccountKey: String?
     private let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
 
@@ -19,6 +20,10 @@ struct MenuContentView: View {
             header
 
             actionBar
+
+            if let pendingAction {
+                confirmationBanner(for: pendingAction)
+            }
 
             if store.accounts.isEmpty {
                 emptyState
@@ -153,6 +158,36 @@ struct MenuContentView: View {
         }
     }
 
+    private func confirmationBanner(for action: PendingAction) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(action.title(store: store))
+                .font(.system(size: 12, weight: .semibold))
+
+            Text(action.message(store: store))
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+
+            HStack(spacing: 8) {
+                Button("取消") {
+                    pendingAction = nil
+                }
+                .buttonStyle(.bordered)
+
+                Button(action.confirmTitle, role: action.buttonRole) {
+                    confirmPendingAction(action)
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(action.backgroundColor.opacity(0.12), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(action.backgroundColor.opacity(0.25), lineWidth: 1)
+        )
+    }
+
     private func accountCard(for account: CodexAccount) -> some View {
         let isEditing = editingAccountKey == account.accountKey
         let isActive = store.activeAccountKey == account.accountKey
@@ -171,6 +206,8 @@ struct MenuContentView: View {
                                 .font(.system(size: 10))
                                 .foregroundStyle(.secondary)
                         }
+
+                        deleteButton(for: account, isActive: isActive)
                     }
 
                     VStack(alignment: .leading, spacing: 6) {
@@ -180,27 +217,30 @@ struct MenuContentView: View {
                         if let line = usageLine(for: account, minutes: 10080, label: "weekly") {
                             usageBadge(line, tint: .blue)
                         }
+                        if let status = usageStatusLine(for: account) {
+                            usageBadge(status.text, tint: status.tint)
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    if !isEditing {
-                        store.switchAccount(account)
+                    if !isEditing, !isActive {
+                        pendingAction = .switchAccount(account)
                     }
                 }
             }
 
         }
         .padding(12)
-        .background(cardBackground(isActive: isActive), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(cardBackground(for: account, isActive: isActive), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(isActive ? Color.green.opacity(0.12) : Color.clear)
+                .fill(cardOverlayColor(for: account, isActive: isActive))
         )
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(cardBorderColor(isActive: isActive), lineWidth: 1)
+                .stroke(cardBorderColor(for: account, isActive: isActive), lineWidth: 1)
         )
     }
 
@@ -246,14 +286,30 @@ struct MenuContentView: View {
         }
     }
 
-    private func cardBackground(isActive: Bool) -> some ShapeStyle {
+    private func cardBackground(for account: CodexAccount, isActive: Bool) -> some ShapeStyle {
+        if account.lastUsageStatus == .accountIssue {
+            return AnyShapeStyle(Color.red.opacity(0.16))
+        }
         if isActive {
             return AnyShapeStyle(.ultraThinMaterial)
         }
         return AnyShapeStyle(.thinMaterial)
     }
 
-    private func cardBorderColor(isActive: Bool) -> Color {
+    private func cardOverlayColor(for account: CodexAccount, isActive: Bool) -> Color {
+        if account.lastUsageStatus == .accountIssue {
+            return Color.red.opacity(0.08)
+        }
+        if isActive {
+            return Color.green.opacity(0.12)
+        }
+        return .clear
+    }
+
+    private func cardBorderColor(for account: CodexAccount, isActive: Bool) -> Color {
+        if account.lastUsageStatus == .accountIssue {
+            return Color.red.opacity(0.34)
+        }
         if isActive {
             return Color.green.opacity(0.22)
         }
@@ -343,6 +399,43 @@ struct MenuContentView: View {
         return nil
     }
 
+    private func usageStatusLine(for account: CodexAccount) -> (text: String, tint: Color)? {
+        switch account.lastUsageStatus {
+        case .accountIssue:
+            return (account.lastUsageErrorMessage ?? "认证失效，请重新登录", .red)
+        case .unknown:
+            return (account.lastUsageErrorMessage ?? "用量接口暂时不可用", .orange)
+        default:
+            return nil
+        }
+    }
+
+    private func deleteButton(for account: CodexAccount, isActive: Bool) -> some View {
+        Button(role: .destructive) {
+            pendingAction = .deleteAccount(account)
+        } label: {
+            Image(systemName: "trash")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(isActive ? Color.secondary : Color.red)
+                .frame(width: 18, height: 18)
+        }
+        .buttonStyle(.plain)
+        .disabled(isActive)
+        .help(isActive ? "请先切换到其他账号，再删除当前激活账号" : "删除本地账号快照")
+    }
+
+    private func confirmPendingAction(_ action: PendingAction) {
+        pendingAction = nil
+        DispatchQueue.main.async {
+            switch action {
+            case .switchAccount(let account):
+                store.switchAccount(account)
+            case .deleteAccount(let account):
+                store.deleteAccount(account)
+            }
+        }
+    }
+
     private func actionButton(_ title: String, systemImage: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Label(title, systemImage: systemImage)
@@ -350,5 +443,55 @@ struct MenuContentView: View {
                 .frame(maxWidth: .infinity)
         }
         .buttonStyle(.bordered)
+    }
+}
+
+private enum PendingAction {
+    case switchAccount(CodexAccount)
+    case deleteAccount(CodexAccount)
+
+    var confirmTitle: String {
+        switch self {
+        case .switchAccount:
+            return "确认切换"
+        case .deleteAccount:
+            return "确认删除"
+        }
+    }
+
+    var buttonRole: ButtonRole? {
+        switch self {
+        case .switchAccount:
+            return nil
+        case .deleteAccount:
+            return .destructive
+        }
+    }
+
+    var backgroundColor: Color {
+        switch self {
+        case .switchAccount:
+            return .blue
+        case .deleteAccount:
+            return .red
+        }
+    }
+
+    func title(store: CodexAccountsStore) -> String {
+        switch self {
+        case .switchAccount:
+            return "确认切换账号"
+        case .deleteAccount:
+            return "确认删除账号"
+        }
+    }
+
+    func message(store: CodexAccountsStore) -> String {
+        switch self {
+        case .switchAccount(let account):
+            return "将切换到 \(store.displayTitle(for: account))。"
+        case .deleteAccount(let account):
+            return "将删除 \(store.displayTitle(for: account)) 的本地快照，此操作不会删除远端账号。"
+        }
     }
 }

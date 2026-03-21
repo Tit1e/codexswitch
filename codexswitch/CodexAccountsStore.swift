@@ -147,6 +147,32 @@ final class CodexAccountsStore: ObservableObject {
         }
     }
 
+    func deleteAccount(_ account: CodexAccount) {
+        do {
+            guard activeAccountKey != account.accountKey else {
+                throw StoreError.activeAccountDeletionNotAllowed
+            }
+
+            var registry = try loadOrCreateRegistry()
+            guard let index = registry.accounts.firstIndex(where: { $0.accountKey == account.accountKey }) else {
+                throw StoreError.accountNotFound
+            }
+
+            registry.accounts.remove(at: index)
+            registry.accounts.sort(by: accountSort)
+            try saveRegistry(registry)
+
+            let snapshotURL = accountAuthURL(for: account.accountKey)
+            if fileManager.fileExists(atPath: snapshotURL.path) {
+                try fileManager.removeItem(at: snapshotURL)
+            }
+
+            reload()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     func quit() {
         NSApplication.shared.terminate(nil)
     }
@@ -219,7 +245,7 @@ final class CodexAccountsStore: ObservableObject {
             return try loadRegistry()
         }
         return CodexRegistry(
-            schemaVersion: 3,
+            schemaVersion: 4,
             activeAccountKey: nil,
             activeAccountActivatedAtMs: nil,
             autoSwitch: AutoSwitchConfig(),
@@ -230,6 +256,8 @@ final class CodexAccountsStore: ObservableObject {
 
     private func saveRegistry(_ registry: CodexRegistry) throws {
         try ensureAccountsDirectory()
+        var registry = registry
+        registry.schemaVersion = 4
         let data = try encoder.encode(registry)
         try writeAtomically(data: data, to: registryURL)
     }
@@ -331,6 +359,8 @@ final class CodexAccountsStore: ObservableObject {
                     lastUsedAt: nil,
                     lastUsage: nil,
                     lastUsageAt: nil,
+                    lastUsageStatus: nil,
+                    lastUsageErrorMessage: nil,
                     lastLocalRollout: nil
                 )
             )
@@ -368,12 +398,23 @@ final class CodexAccountsStore: ObservableObject {
 
             for index in registry.accounts.indices {
                 let account = registry.accounts[index]
-                guard let credentials = try loadUsageCredentials(for: account.accountKey) else { continue }
-                guard let snapshot = try await fetchUsageSnapshot(credentials: credentials) else { continue }
+                let result = await refreshUsageState(for: account.accountKey)
 
-                registry.accounts[index].lastUsage = snapshot
-                registry.accounts[index].lastUsageAt = Int64(Date().timeIntervalSince1970)
-                registry.accounts[index].plan = snapshot.planType ?? registry.accounts[index].plan
+                switch result {
+                case .success(let snapshot):
+                    registry.accounts[index].lastUsage = snapshot
+                    registry.accounts[index].lastUsageAt = Int64(Date().timeIntervalSince1970)
+                    registry.accounts[index].lastUsageStatus = .ok
+                    registry.accounts[index].lastUsageErrorMessage = nil
+                    registry.accounts[index].plan = snapshot.planType ?? registry.accounts[index].plan
+                case .accountIssue(let message):
+                    registry.accounts[index].lastUsageStatus = .accountIssue
+                    registry.accounts[index].lastUsageErrorMessage = message
+                case .unknown(let message):
+                    registry.accounts[index].lastUsageStatus = .unknown
+                    registry.accounts[index].lastUsageErrorMessage = message
+                }
+
                 changed = true
             }
 
@@ -389,16 +430,41 @@ final class CodexAccountsStore: ObservableObject {
         }
     }
 
-    private func loadUsageCredentials(for accountKey: String) throws -> UsageCredentials? {
+    private func refreshUsageState(for accountKey: String) async -> UsageRefreshResult {
+        do {
+            let credentials = try loadUsageCredentials(for: accountKey)
+            return try await fetchUsageSnapshot(credentials: credentials)
+        } catch let error as UsageRefreshError {
+            switch error {
+            case .accountIssue(let message):
+                return .accountIssue(message)
+            case .unknown(let message):
+                return .unknown(message)
+            }
+        } catch {
+            return .unknown("用量接口请求失败")
+        }
+    }
+
+    private func loadUsageCredentials(for accountKey: String) throws -> UsageCredentials {
         let authURL = accountAuthURL(for: accountKey)
-        guard fileManager.fileExists(atPath: authURL.path) else { return nil }
+        guard fileManager.fileExists(atPath: authURL.path) else {
+            throw UsageRefreshError.accountIssue("账号快照缺失")
+        }
         let authData = try Data(contentsOf: authURL)
-        let info = try parseAuthInfo(from: authData)
-        guard let accessToken = info.accessToken, !accessToken.isEmpty else { return nil }
+        let info: ImportedAuthInfo
+        do {
+            info = try parseAuthInfo(from: authData)
+        } catch {
+            throw UsageRefreshError.accountIssue("账号认证信息无效")
+        }
+        guard let accessToken = info.accessToken, !accessToken.isEmpty else {
+            throw UsageRefreshError.accountIssue("缺少 access token")
+        }
         return UsageCredentials(accessToken: accessToken, accountID: info.accountID)
     }
 
-    private func fetchUsageSnapshot(credentials: UsageCredentials) async throws -> RateLimitSnapshot? {
+    private func fetchUsageSnapshot(credentials: UsageCredentials) async throws -> UsageRefreshResult {
         var request = URLRequest(url: usageEndpoint)
         request.httpMethod = "GET"
         request.timeoutInterval = 5
@@ -407,11 +473,31 @@ final class CodexAccountsStore: ObservableObject {
         request.setValue("codexswitch", forHTTPHeaderField: "User-Agent")
         request.setValue("identity", forHTTPHeaderField: "Accept-Encoding")
 
-        let (data, response) = try await URLSession.shared.data(for: request)
-        guard let httpResponse = response as? HTTPURLResponse, (200 ..< 300).contains(httpResponse.statusCode) else {
-            return nil
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            throw UsageRefreshError.unknown("网络异常或请求超时")
         }
-        return try parseAPIUsageResponse(data: data)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw UsageRefreshError.unknown("用量接口响应无效")
+        }
+        if httpResponse.statusCode == 401 || httpResponse.statusCode == 403 {
+            return .accountIssue("认证失效，请重新登录")
+        }
+        guard (200 ..< 300).contains(httpResponse.statusCode) else {
+            return .unknown("用量接口暂时不可用")
+        }
+
+        do {
+            guard let snapshot = try parseAPIUsageResponse(data: data) else {
+                return .unknown("用量数据为空")
+            }
+            return .success(snapshot)
+        } catch {
+            throw UsageRefreshError.unknown("用量数据解析失败")
+        }
     }
 
     private func parseAPIUsageResponse(data: Data) throws -> RateLimitSnapshot? {
@@ -489,6 +575,8 @@ final class CodexAccountsStore: ObservableObject {
                     lastUsedAt: nil,
                     lastUsage: nil,
                     lastUsageAt: nil,
+                    lastUsageStatus: nil,
+                    lastUsageErrorMessage: nil,
                     lastLocalRollout: nil
                 )
             )
@@ -670,6 +758,7 @@ extension Character {
 enum StoreError: LocalizedError {
     case registryMissing(String)
     case accountNotFound
+    case activeAccountDeletionNotAllowed
     case authSnapshotMissing(String)
     case invalidAuthFile(String)
 
@@ -679,6 +768,8 @@ enum StoreError: LocalizedError {
             return "未找到 registry.json: \(path)"
         case .accountNotFound:
             return "账号不存在，可能已经被外部工具移除。"
+        case .activeAccountDeletionNotAllowed:
+            return "请先切换到其他账号，再删除当前激活账号。"
         case .authSnapshotMissing(let filename):
             return "未找到账号快照文件: \(filename)"
         case .invalidAuthFile(let reason):
@@ -699,4 +790,15 @@ private struct ImportedAuthInfo {
 private struct UsageCredentials {
     let accessToken: String
     let accountID: String
+}
+
+private enum UsageRefreshResult {
+    case success(RateLimitSnapshot)
+    case accountIssue(String)
+    case unknown(String)
+}
+
+private enum UsageRefreshError: Error {
+    case accountIssue(String)
+    case unknown(String)
 }
