@@ -9,10 +9,7 @@ import SwiftUI
 
 struct MenuContentView: View {
     @ObservedObject var store: CodexAccountsStore
-    @State private var editingAccountKey: String?
-    @State private var aliasDraft = ""
     @State private var pendingAction: PendingAction?
-    @FocusState private var focusedAccountKey: String?
     private let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
 
     var body: some View {
@@ -29,15 +26,8 @@ struct MenuContentView: View {
                 emptyState
             } else {
                 VStack(alignment: .leading, spacing: 12) {
-                    ForEach(store.groupedAccounts(), id: \.email) { group in
-                        Text(group.email)
-                            .font(.system(size: 11, weight: .semibold))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 4)
-
-                        ForEach(group.accounts) { account in
-                            accountCard(for: account)
-                        }
+                    ForEach(store.accounts) { account in
+                        accountCard(for: account)
                     }
                 }
                 .padding(.vertical, 2)
@@ -74,7 +64,7 @@ struct MenuContentView: View {
                 Text("Codex Switch")
                     .font(.system(size: 16, weight: .semibold))
                 if let active = store.activeAccount {
-                    Text("当前：\(store.workspaceName(for: active))")
+                    Text("当前：\(active.email)")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 } else {
@@ -189,15 +179,13 @@ struct MenuContentView: View {
     }
 
     private func accountCard(for account: CodexAccount) -> some View {
-        let isEditing = editingAccountKey == account.accountKey
         let isActive = store.activeAccountKey == account.accountKey
-        let isTeamAccount = isTeam(account)
 
         return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 10) {
                 VStack(alignment: .leading, spacing: 6) {
                     HStack(alignment: .center, spacing: 8) {
-                        titleView(for: account, isEditing: isEditing, isTeamAccount: isTeamAccount)
+                        titleView(for: account)
 
                         Spacer(minLength: 8)
 
@@ -225,7 +213,7 @@ struct MenuContentView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    if !isEditing, !isActive {
+                    if !isActive {
                         pendingAction = .switchAccount(account)
                     }
                 }
@@ -245,44 +233,14 @@ struct MenuContentView: View {
     }
 
     @ViewBuilder
-    private func titleView(for account: CodexAccount, isEditing: Bool, isTeamAccount: Bool) -> some View {
-        if isTeamAccount {
-            workspaceTitle(for: account, isEditing: isEditing)
-                .onTapGesture {
-                    if !isEditing {
-                        editingAccountKey = account.accountKey
-                        aliasDraft = account.alias.isEmpty ? "" : account.alias
-                        focusedAccountKey = account.accountKey
-                    }
-                }
-        } else {
-            HStack(spacing: 6) {
-                Text(account.email)
-                    .font(.system(size: 13, weight: .semibold))
-                    .multilineTextAlignment(.leading)
-                if let plan = displayPlan(for: account) {
-                    planTag(plan)
-                }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func workspaceTitle(for account: CodexAccount, isEditing: Bool) -> some View {
-        if isEditing {
-            TextField("工作区名称", text: $aliasDraft)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 13, weight: .semibold))
-                .focused($focusedAccountKey, equals: account.accountKey)
-                .onSubmit {
-                    store.saveWorkspaceAlias(aliasDraft, for: account)
-                    editingAccountKey = nil
-                    focusedAccountKey = nil
-                }
-        } else {
-            Text(store.workspaceName(for: account))
+    private func titleView(for account: CodexAccount) -> some View {
+        HStack(spacing: 6) {
+            Text(account.email)
                 .font(.system(size: 13, weight: .semibold))
                 .multilineTextAlignment(.leading)
+            if let plan = displayPlan(for: account) {
+                planTag(plan)
+            }
         }
     }
 
@@ -387,11 +345,6 @@ struct MenuContentView: View {
             .background(Color.primary.opacity(0.07), in: Capsule())
     }
 
-    private func isTeam(_ account: CodexAccount) -> Bool {
-        guard let plan = displayPlan(for: account)?.lowercased() else { return false }
-        return plan == "team"
-    }
-
     private func displayPlan(for account: CodexAccount) -> String? {
         if let plan = account.lastUsage?.planType ?? account.plan {
             return plan.capitalized
@@ -490,9 +443,9 @@ private enum PendingAction {
     func message(store: CodexAccountsStore) -> String {
         switch self {
         case .switchAccount(let account):
-            return "将切换到 \(store.displayTitle(for: account))。"
+            return "将切换到 \(account.email)。"
         case .deleteAccount(let account):
-            return "将删除 \(store.displayTitle(for: account)) 的本地快照，此操作不会删除远端账号。"
+            return "将删除 \(account.email) 的本地快照，此操作不会删除远端账号。"
         }
     }
 }
