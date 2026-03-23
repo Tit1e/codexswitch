@@ -486,6 +486,7 @@ private enum PendingAction {
         }
     }
 
+    @MainActor
     func message(store: CodexAccountsStore) -> String {
         switch self {
         case .switchAccount(let account):
