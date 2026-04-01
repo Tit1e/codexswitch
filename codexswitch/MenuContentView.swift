@@ -194,8 +194,6 @@ struct MenuContentView: View {
                                 .font(.system(size: 10))
                                 .foregroundStyle(.secondary)
                         }
-
-                        deleteButton(for: account, isActive: isActive)
                     }
 
                     VStack(alignment: .leading, spacing: 6) {
@@ -217,6 +215,8 @@ struct MenuContentView: View {
                         pendingAction = .switchAccount(account)
                     }
                 }
+
+                deleteButton(for: account, isActive: isActive)
             }
 
         }
@@ -225,10 +225,12 @@ struct MenuContentView: View {
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(cardOverlayColor(for: account, isActive: isActive))
+                .allowsHitTesting(false)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(cardBorderColor(for: account, isActive: isActive), lineWidth: 1)
+                .allowsHitTesting(false)
         )
     }
 
@@ -369,12 +371,11 @@ struct MenuContentView: View {
         } label: {
             Image(systemName: "trash")
                 .font(.system(size: 11, weight: .semibold))
-                .foregroundStyle(isActive ? Color.secondary : Color.red)
+                .foregroundStyle(Color.red)
                 .frame(width: 18, height: 18)
         }
         .buttonStyle(.plain)
-        .disabled(isActive)
-        .help(isActive ? "请先切换到其他账号，再删除当前激活账号" : "删除本地账号快照")
+        .help(isActive ? "删除当前激活账号后，将清空当前激活状态" : "删除本地账号快照")
     }
 
     private func confirmPendingAction(_ action: PendingAction) {

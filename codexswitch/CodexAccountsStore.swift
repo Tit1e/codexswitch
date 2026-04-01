@@ -149,16 +149,16 @@ final class CodexAccountsStore: ObservableObject {
 
     func deleteAccount(_ account: CodexAccount) {
         do {
-            guard activeAccountKey != account.accountKey else {
-                throw StoreError.activeAccountDeletionNotAllowed
-            }
-
             var registry = try loadOrCreateRegistry()
             guard let index = registry.accounts.firstIndex(where: { $0.accountKey == account.accountKey }) else {
                 throw StoreError.accountNotFound
             }
 
             registry.accounts.remove(at: index)
+            if registry.activeAccountKey == account.accountKey {
+                registry.activeAccountKey = nil
+                registry.activeAccountActivatedAtMs = nil
+            }
             registry.accounts.sort(by: accountSort)
             try saveRegistry(registry)
 
@@ -758,7 +758,6 @@ extension Character {
 enum StoreError: LocalizedError {
     case registryMissing(String)
     case accountNotFound
-    case activeAccountDeletionNotAllowed
     case authSnapshotMissing(String)
     case invalidAuthFile(String)
 
@@ -768,8 +767,6 @@ enum StoreError: LocalizedError {
             return "未找到 registry.json: \(path)"
         case .accountNotFound:
             return "账号不存在，可能已经被外部工具移除。"
-        case .activeAccountDeletionNotAllowed:
-            return "请先切换到其他账号，再删除当前激活账号。"
         case .authSnapshotMissing(let filename):
             return "未找到账号快照文件: \(filename)"
         case .invalidAuthFile(let reason):
