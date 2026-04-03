@@ -16,10 +16,19 @@ final class CodexAccountsStore: ObservableObject {
     @Published private(set) var isSwitching = false
     @Published private(set) var isImporting = false
     @Published private(set) var isRefreshingUsage = false
+    @Published private(set) var isOpenCodeInstalled = false
+    @Published private(set) var syncOpenCodeOnSwitch = false
+    @Published private(set) var updateStatus: UpdateStatus = .idle
+    @Published private(set) var currentAppVersion: String
+    @Published private(set) var latestAvailableVersion: String?
+    @Published private(set) var availableUpdate: AvailableUpdate?
+    @Published private(set) var downloadedUpdateURL: URL?
+    @Published private(set) var updateMessage: String?
     @Published private(set) var errorMessage: String?
     @Published private(set) var lastUpdatedAt: Date?
 
     private let usageEndpoint = URL(string: "https://chatgpt.com/backend-api/wham/usage")!
+    private let latestReleaseEndpoint = URL(string: "https://api.github.com/repos/Tit1e/codexswitch/releases/latest")!
     private let fileManager = FileManager.default
     private let encoder: JSONEncoder = {
         let encoder = JSONEncoder()
@@ -29,18 +38,29 @@ final class CodexAccountsStore: ObservableObject {
     private let decoder = JSONDecoder()
     private var timerCancellable: AnyCancellable?
     private var lastUsageRefreshAt: Date?
+    private let isOpenCodeCommandAvailable: () -> Bool
 
     let codexHomeURL: URL
     let accountsDirectoryURL: URL
     let registryURL: URL
     let activeAuthURL: URL
+    let openCodeDataURL: URL
+    let openCodeAuthURL: URL
 
-    init() {
+    init(
+        codexHomeURL: URL? = nil,
+        openCodeDataURL: URL? = nil,
+        isOpenCodeCommandAvailable: @escaping () -> Bool = CodexAccountsStore.defaultOpenCodeCommandCheck
+    ) {
         let homeURL = fileManager.homeDirectoryForCurrentUser
-        codexHomeURL = homeURL.appendingPathComponent(".codex", isDirectory: true)
-        accountsDirectoryURL = codexHomeURL.appendingPathComponent("accounts", isDirectory: true)
+        self.codexHomeURL = codexHomeURL ?? homeURL.appendingPathComponent(".codex", isDirectory: true)
+        accountsDirectoryURL = self.codexHomeURL.appendingPathComponent("accounts", isDirectory: true)
         registryURL = accountsDirectoryURL.appendingPathComponent("registry.json")
-        activeAuthURL = codexHomeURL.appendingPathComponent("auth.json")
+        activeAuthURL = self.codexHomeURL.appendingPathComponent("auth.json")
+        self.openCodeDataURL = openCodeDataURL ?? homeURL.appendingPathComponent(".local/share/opencode", isDirectory: true)
+        openCodeAuthURL = self.openCodeDataURL.appendingPathComponent("auth.json")
+        self.isOpenCodeCommandAvailable = isOpenCodeCommandAvailable
+        currentAppVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0.0.0"
 
         reload()
         timerCancellable = Timer.publish(every: 20, on: .main, in: .common)
@@ -65,12 +85,16 @@ final class CodexAccountsStore: ObservableObject {
             let registry = try loadRegistry()
             accounts = registry.accounts.sorted(by: accountSort)
             activeAccountKey = registry.activeAccountKey
+            syncOpenCodeOnSwitch = registry.syncOpenCodeOnSwitch
+            isOpenCodeInstalled = detectOpenCodeInstallation()
             errorMessage = nil
             lastUpdatedAt = .now
             scheduleUsageRefreshIfNeeded()
         } catch {
             accounts = []
             activeAccountKey = nil
+            syncOpenCodeOnSwitch = false
+            isOpenCodeInstalled = detectOpenCodeInstallation()
             errorMessage = error.localizedDescription
         }
     }
@@ -107,7 +131,14 @@ final class CodexAccountsStore: ObservableObject {
             }
 
             try saveRegistry(registry)
-            reload()
+
+            do {
+                try syncOpenCodeAuthIfNeeded(using: sourceURL, registry: registry)
+                reload()
+            } catch {
+                reload()
+                errorMessage = "Codex 已切换，但 OpenCode 同步失败"
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -147,6 +178,17 @@ final class CodexAccountsStore: ObservableObject {
         }
     }
 
+    func setSyncOpenCodeOnSwitch(_ enabled: Bool) {
+        do {
+            var registry = try loadOrCreateRegistry()
+            registry.syncOpenCodeOnSwitch = enabled
+            try saveRegistry(registry)
+            reload()
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
     func deleteAccount(_ account: CodexAccount) {
         do {
             var registry = try loadOrCreateRegistry()
@@ -170,6 +212,73 @@ final class CodexAccountsStore: ObservableObject {
             reload()
         } catch {
             errorMessage = error.localizedDescription
+        }
+    }
+
+    func checkForUpdates() {
+        guard updateStatus != .checking, updateStatus != .downloading else { return }
+
+        updateStatus = .checking
+        updateMessage = nil
+        latestAvailableVersion = nil
+        availableUpdate = nil
+        downloadedUpdateURL = nil
+
+        Task {
+            do {
+                let release = try await fetchLatestRelease()
+                let update = try resolveAvailableUpdate(from: release)
+
+                if isRemoteVersionNewer(update.version, than: currentAppVersion) {
+                    latestAvailableVersion = update.version
+                    availableUpdate = update
+                    updateStatus = .updateAvailable
+                    updateMessage = "发现新版本 v\(update.version)"
+                } else {
+                    updateStatus = .upToDate
+                    updateMessage = "当前已是最新版本"
+                }
+            } catch let error as StoreError {
+                updateStatus = .failed
+                updateMessage = error.errorDescription
+            } catch {
+                updateStatus = .failed
+                updateMessage = "检查更新失败，请稍后重试"
+            }
+        }
+    }
+
+    func downloadLatestUpdate() {
+        guard updateStatus != .checking, updateStatus != .downloading,
+              let availableUpdate else { return }
+
+        updateStatus = .downloading
+        updateMessage = "正在下载更新"
+
+        Task {
+            do {
+                let localURL = try await downloadUpdate(availableUpdate)
+                downloadedUpdateURL = localURL
+                updateStatus = .downloaded
+                updateMessage = "下载完成"
+            } catch let error as StoreError {
+                updateStatus = .failed
+                updateMessage = error.errorDescription
+            } catch {
+                updateStatus = .failed
+                updateMessage = "下载更新失败"
+            }
+        }
+    }
+
+    func openDownloadedInstaller() {
+        guard let downloadedUpdateURL else { return }
+
+        if NSWorkspace.shared.open(downloadedUpdateURL) {
+            updateMessage = "下载完成"
+        } else {
+            updateStatus = .failed
+            updateMessage = "安装包已下载，但无法自动打开"
         }
     }
 
@@ -245,11 +354,12 @@ final class CodexAccountsStore: ObservableObject {
             return try loadRegistry()
         }
         return CodexRegistry(
-            schemaVersion: 4,
+            schemaVersion: 5,
             activeAccountKey: nil,
             activeAccountActivatedAtMs: nil,
             autoSwitch: AutoSwitchConfig(),
             api: ApiConfig(),
+            syncOpenCodeOnSwitch: false,
             accounts: []
         )
     }
@@ -257,9 +367,13 @@ final class CodexAccountsStore: ObservableObject {
     private func saveRegistry(_ registry: CodexRegistry) throws {
         try ensureAccountsDirectory()
         var registry = registry
-        registry.schemaVersion = 4
+        registry.schemaVersion = 5
         let data = try encoder.encode(registry)
         try writeAtomically(data: data, to: registryURL)
+    }
+
+    private func detectOpenCodeInstallation() -> Bool {
+        isOpenCodeCommandAvailable() && fileManager.fileExists(atPath: openCodeDataURL.path)
     }
 
     private func ensureAccountsDirectory() throws {
@@ -534,6 +648,144 @@ final class CodexAccountsStore: ObservableObject {
         return CreditsSnapshot(hasCredits: hasCredits, unlimited: unlimited, balance: balance)
     }
 
+    private func syncOpenCodeAuthIfNeeded(using sourceURL: URL, registry: CodexRegistry) throws {
+        guard registry.syncOpenCodeOnSwitch else { return }
+
+        let installed = detectOpenCodeInstallation()
+        isOpenCodeInstalled = installed
+        guard installed else { return }
+
+        let authData = try Data(contentsOf: sourceURL)
+        let info = try parseAuthInfo(from: authData)
+        guard let accessToken = info.accessToken, !accessToken.isEmpty,
+              let refreshToken = info.refreshToken, !refreshToken.isEmpty,
+              let expiresAtMs = info.accessTokenExpiresAtMs else {
+            throw StoreError.invalidOpenCodeAuth("当前账号缺少 OpenCode 所需的 OAuth 字段")
+        }
+
+        let payload = OpenCodeAuthPayload(
+            openai: OpenCodeProviderAuth(
+                type: "oauth",
+                access: accessToken,
+                refresh: refreshToken,
+                expires: expiresAtMs,
+                accountId: info.accountID
+            )
+        )
+
+        try fileManager.createDirectory(at: openCodeDataURL, withIntermediateDirectories: true)
+        let data = try encoder.encode(payload)
+        try writeAtomically(data: data, to: openCodeAuthURL)
+    }
+
+    private func fetchLatestRelease() async throws -> GitHubRelease {
+        var request = URLRequest(url: latestReleaseEndpoint)
+        request.httpMethod = "GET"
+        request.timeoutInterval = 10
+        request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
+        request.setValue("codexswitch", forHTTPHeaderField: "User-Agent")
+
+        let data: Data
+        let response: URLResponse
+        do {
+            (data, response) = try await URLSession.shared.data(for: request)
+        } catch {
+            throw StoreError.updateCheckFailed("检查更新失败，请稍后重试")
+        }
+
+        guard let httpResponse = response as? HTTPURLResponse,
+              (200 ..< 300).contains(httpResponse.statusCode) else {
+            throw StoreError.updateCheckFailed("检查更新失败，请稍后重试")
+        }
+
+        do {
+            return try decoder.decode(GitHubRelease.self, from: data)
+        } catch {
+            throw StoreError.updateCheckFailed("检查更新失败，请稍后重试")
+        }
+    }
+
+    private func resolveAvailableUpdate(from release: GitHubRelease) throws -> AvailableUpdate {
+        let version = normalizeVersion(release.tagName)
+        guard !version.isEmpty, versionComponents(for: version) != nil else {
+            throw StoreError.updateCheckFailed("检查更新失败，请稍后重试")
+        }
+
+        let preferredAsset = release.assets.first(where: { $0.name == "Codex-Switch-macOS.dmg" })
+            ?? release.assets.first(where: { $0.name.lowercased().hasSuffix(".dmg") })
+
+        guard let asset = preferredAsset else {
+            throw StoreError.updateAssetMissing
+        }
+
+        return AvailableUpdate(
+            version: version,
+            releaseURL: release.htmlURL,
+            assetName: asset.name,
+            assetURL: asset.browserDownloadURL
+        )
+    }
+
+    private func normalizeVersion(_ value: String) -> String {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.lowercased().hasPrefix("v") {
+            return String(trimmed.dropFirst())
+        }
+        return trimmed
+    }
+
+    private func versionComponents(for version: String) -> [Int]? {
+        let parts = normalizeVersion(version).split(separator: ".")
+        guard !parts.isEmpty else { return nil }
+
+        var components = [Int]()
+        for part in parts {
+            guard let value = Int(part) else { return nil }
+            components.append(value)
+        }
+        return components
+    }
+
+    private func isRemoteVersionNewer(_ remote: String, than local: String) -> Bool {
+        guard let remoteParts = versionComponents(for: remote),
+              let localParts = versionComponents(for: local) else {
+            return false
+        }
+
+        let count = max(remoteParts.count, localParts.count)
+        for index in 0..<count {
+            let remoteValue = index < remoteParts.count ? remoteParts[index] : 0
+            let localValue = index < localParts.count ? localParts[index] : 0
+            if remoteValue != localValue {
+                return remoteValue > localValue
+            }
+        }
+        return false
+    }
+
+    private func downloadUpdate(_ update: AvailableUpdate) async throws -> URL {
+        let downloadsURL = try fileManager.url(for: .downloadsDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+        let destinationURL = downloadsURL.appendingPathComponent(update.assetName)
+
+        let temporaryURL: URL
+        do {
+            let result = try await URLSession.shared.download(from: update.assetURL)
+            temporaryURL = result.0
+        } catch {
+            throw StoreError.updateDownloadFailed("下载更新失败")
+        }
+
+        do {
+            if fileManager.fileExists(atPath: destinationURL.path) {
+                try fileManager.removeItem(at: destinationURL)
+            }
+            try fileManager.moveItem(at: temporaryURL, to: destinationURL)
+            return destinationURL
+        } catch {
+            throw StoreError.updateDownloadFailed("下载更新失败")
+        }
+    }
+
     private func importAuthFile(from sourceURL: URL) throws {
         guard !isImporting else { return }
         isImporting = true
@@ -596,6 +848,7 @@ final class CodexAccountsStore: ObservableObject {
             throw StoreError.invalidAuthFile("缺少 tokens 字段")
         }
         let accessToken = tokens["access_token"] as? String
+        let refreshToken = tokens["refresh_token"] as? String
         guard let accountID = tokens["account_id"] as? String, !accountID.isEmpty else {
             throw StoreError.invalidAuthFile("缺少 account_id")
         }
@@ -621,13 +874,16 @@ final class CodexAccountsStore: ObservableObject {
         }
 
         let plan = (auth["chatgpt_plan_type"] as? String)?.lowercased()
+        let accessTokenExpiresAtMs = tokenExpirationMillis(accessToken) ?? tokenExpirationMillis(idToken)
         return ImportedAuthInfo(
             email: email,
             userID: userID,
             accountID: accountID,
             recordKey: "\(userID)::\(accountID)",
             plan: plan,
-            accessToken: accessToken
+            accessToken: accessToken,
+            refreshToken: refreshToken,
+            accessTokenExpiresAtMs: accessTokenExpiresAtMs
         )
     }
 
@@ -654,6 +910,18 @@ final class CodexAccountsStore: ObservableObject {
         return payload
     }
 
+    private func tokenExpirationMillis(_ token: String?) -> Int64? {
+        guard let token, !token.isEmpty,
+              let payload = try? decodeJWTPayload(token) else {
+            return nil
+        }
+
+        if let exp = payload["exp"] as? NSNumber {
+            return exp.int64Value * 1000
+        }
+        return nil
+    }
+
     private func launchCodexLoginInTerminal() throws {
         let script = """
         tell application "Terminal"
@@ -666,6 +934,20 @@ final class CodexAccountsStore: ObservableObject {
         process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
         process.arguments = ["-e", script]
         try process.run()
+    }
+
+    nonisolated private static func defaultOpenCodeCommandCheck() -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["sh", "-lc", "command -v opencode >/dev/null 2>&1"]
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus == 0
+        } catch {
+            return false
+        }
     }
 
     private func accountSort(lhs: CodexAccount, rhs: CodexAccount) -> Bool {
@@ -760,6 +1042,10 @@ enum StoreError: LocalizedError {
     case accountNotFound
     case authSnapshotMissing(String)
     case invalidAuthFile(String)
+    case invalidOpenCodeAuth(String)
+    case updateCheckFailed(String)
+    case updateAssetMissing
+    case updateDownloadFailed(String)
 
     var errorDescription: String? {
         switch self {
@@ -771,6 +1057,14 @@ enum StoreError: LocalizedError {
             return "未找到账号快照文件: \(filename)"
         case .invalidAuthFile(let reason):
             return "auth.json 无法导入: \(reason)"
+        case .invalidOpenCodeAuth(let reason):
+            return "OpenCode 认证信息无效: \(reason)"
+        case .updateCheckFailed(let reason):
+            return reason
+        case .updateAssetMissing:
+            return "未找到可下载的 macOS 安装包"
+        case .updateDownloadFailed(let reason):
+            return reason
         }
     }
 }
@@ -782,7 +1076,35 @@ private struct ImportedAuthInfo {
     let recordKey: String
     let plan: String?
     let accessToken: String?
+    let refreshToken: String?
+    let accessTokenExpiresAtMs: Int64?
 }
+
+private struct OpenCodeAuthPayload: Codable {
+    let openai: OpenCodeProviderAuth
+}
+
+private struct OpenCodeProviderAuth: Codable {
+    let type: String
+    let access: String
+    let refresh: String
+    let expires: Int64
+    let accountId: String
+}
+
+#if DEBUG
+extension CodexAccountsStore {
+    func test_loadRegistry() throws -> CodexRegistry { try loadRegistry() }
+    func test_loadOrCreateRegistry() throws -> CodexRegistry { try loadOrCreateRegistry() }
+
+    func test_setOpenCodeSyncEnabled(_ enabled: Bool) throws {
+        var registry = try loadOrCreateRegistry()
+        registry.syncOpenCodeOnSwitch = enabled
+        try saveRegistry(registry)
+        reload()
+    }
+}
+#endif
 
 private struct UsageCredentials {
     let accessToken: String

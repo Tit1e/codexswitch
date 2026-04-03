@@ -76,14 +76,27 @@ struct MenuContentView: View {
 
             Spacer()
 
-            Circle()
-                .fill(Color.accentColor.opacity(0.16))
-                .frame(width: 30, height: 30)
-                .overlay(
-                    Image(systemName: store.statusIconName)
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(Color.accentColor)
-                )
+            VStack(alignment: .trailing, spacing: 4) {
+                Toggle(isOn: Binding(
+                    get: { store.syncOpenCodeOnSwitch },
+                    set: { store.setSyncOpenCodeOnSwitch($0) }
+                )) {
+                    EmptyView()
+                }
+                .toggleStyle(.switch)
+                .labelsHidden()
+                .disabled(!store.isOpenCodeInstalled)
+
+                Text("同步 OpenCode")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(.secondary)
+
+                if !store.isOpenCodeInstalled {
+                    Text("未检测到 OpenCode")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
     }
 
@@ -119,7 +132,7 @@ struct MenuContentView: View {
     }
 
     private var footer: some View {
-        HStack {
+        ZStack {
             VStack(alignment: .leading, spacing: 2) {
                 if let lastUpdatedAt = store.lastUpdatedAt {
                     Text("列表更新于 \(lastUpdatedAt.formatted(date: .omitted, time: .shortened))")
@@ -133,8 +146,7 @@ struct MenuContentView: View {
                         .lineLimit(2)
                 }
             }
-
-            Spacer()
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             if let appVersion, !appVersion.isEmpty {
                 Text("v\(appVersion)")
@@ -142,9 +154,63 @@ struct MenuContentView: View {
                     .foregroundStyle(.secondary)
             }
 
-            Button("退出应用", role: .destructive) {
-                store.quit()
+            HStack(spacing: 8) {
+                Button {
+                    handleUpdateButtonTap()
+                } label: {
+                    Image(systemName: updateButtonIcon)
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 18, height: 18)
+                }
+                .buttonStyle(.plain)
+                .help(updateButtonHelp)
+
+                Button("退出应用", role: .destructive) {
+                    store.quit()
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+    }
+
+    private var updateButtonIcon: String {
+        switch store.updateStatus {
+        case .checking, .downloading:
+            return "hourglass"
+        case .updateAvailable:
+            return "arrow.down.circle"
+        case .downloaded:
+            return "shippingbox"
+        default:
+            return "arrow.clockwise"
+        }
+    }
+
+    private var updateButtonHelp: String {
+        switch store.updateStatus {
+        case .updateAvailable:
+            return "下载更新"
+        case .downloaded:
+            return "打开安装包"
+        case .checking:
+            return "正在检查更新"
+        case .downloading:
+            return "正在下载更新"
+        default:
+            return "检查更新"
+        }
+    }
+
+    private func handleUpdateButtonTap() {
+        switch store.updateStatus {
+        case .updateAvailable:
+            store.downloadLatestUpdate()
+        case .downloaded:
+            store.openDownloadedInstaller()
+        case .checking, .downloading:
+            break
+        default:
+            store.checkForUpdates()
         }
     }
 

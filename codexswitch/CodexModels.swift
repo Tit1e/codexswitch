@@ -19,6 +19,7 @@ struct CodexRegistry: Codable {
     var activeAccountActivatedAtMs: Int64?
     var autoSwitch: AutoSwitchConfig
     var api: ApiConfig
+    var syncOpenCodeOnSwitch: Bool
     var accounts: [CodexAccount]
 
     enum CodingKeys: String, CodingKey {
@@ -27,7 +28,21 @@ struct CodexRegistry: Codable {
         case activeAccountActivatedAtMs = "active_account_activated_at_ms"
         case autoSwitch = "auto_switch"
         case api
+        case syncOpenCodeOnSwitch = "sync_opencode_on_switch"
         case accounts
+    }
+}
+
+extension CodexRegistry {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        activeAccountKey = try container.decodeIfPresent(String.self, forKey: .activeAccountKey)
+        activeAccountActivatedAtMs = try container.decodeIfPresent(Int64.self, forKey: .activeAccountActivatedAtMs)
+        autoSwitch = try container.decode(AutoSwitchConfig.self, forKey: .autoSwitch)
+        api = try container.decode(ApiConfig.self, forKey: .api)
+        syncOpenCodeOnSwitch = try container.decodeIfPresent(Bool.self, forKey: .syncOpenCodeOnSwitch) ?? false
+        accounts = try container.decode([CodexAccount].self, forKey: .accounts)
     }
 }
 
@@ -129,4 +144,43 @@ struct CreditsSnapshot: Codable {
         case unlimited
         case balance
     }
+}
+
+enum UpdateStatus: Equatable {
+    case idle
+    case checking
+    case upToDate
+    case updateAvailable
+    case downloading
+    case downloaded
+    case failed
+}
+
+struct GitHubRelease: Decodable {
+    var tagName: String
+    var htmlURL: URL
+    var assets: [GitHubReleaseAsset]
+
+    enum CodingKeys: String, CodingKey {
+        case tagName = "tag_name"
+        case htmlURL = "html_url"
+        case assets
+    }
+}
+
+struct GitHubReleaseAsset: Decodable {
+    var name: String
+    var browserDownloadURL: URL
+
+    enum CodingKeys: String, CodingKey {
+        case name
+        case browserDownloadURL = "browser_download_url"
+    }
+}
+
+struct AvailableUpdate: Equatable {
+    var version: String
+    var releaseURL: URL
+    var assetName: String
+    var assetURL: URL
 }

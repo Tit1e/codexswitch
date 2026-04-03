@@ -8,6 +8,7 @@
 
 /* Begin PBXFileReference section */
 		93116D812F6A3F8D00413EB3 /* Codex Switch.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Codex Switch.app"; sourceTree = BUILT_PRODUCTS_DIR; };
+		C01234012F6A3F8D00413EB3 /* codexswitchTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = codexswitchTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -16,10 +17,22 @@
 			path = codexswitch;
 			sourceTree = "<group>";
 		};
+		C01234022F6A3F8D00413EB3 /* codexswitchTests */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			path = codexswitchTests;
+			sourceTree = "<group>";
+		};
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		93116D7E2F6A3F8D00413EB3 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C01234032F6A3F8D00413EB3 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -33,6 +46,7 @@
 			isa = PBXGroup;
 			children = (
 				93116D832F6A3F8D00413EB3 /* codexswitch */,
+				C01234022F6A3F8D00413EB3 /* codexswitchTests */,
 				93116D822F6A3F8D00413EB3 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,11 +55,22 @@
 			isa = PBXGroup;
 			children = (
 				93116D812F6A3F8D00413EB3 /* Codex Switch.app */,
+				C01234012F6A3F8D00413EB3 /* codexswitchTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
+
+/* Begin PBXContainerItemProxy section */
+		C01234042F6A3F8D00413EB3 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 93116D792F6A3F8D00413EB3 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 93116D802F6A3F8D00413EB3;
+			remoteInfo = codexswitch;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin PBXNativeTarget section */
 		93116D802F6A3F8D00413EB3 /* codexswitch */ = {
@@ -70,6 +95,29 @@
 			productReference = 93116D812F6A3F8D00413EB3 /* Codex Switch.app */;
 			productType = "com.apple.product-type.application";
 		};
+		C01234052F6A3F8D00413EB3 /* codexswitchTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C012340A2F6A3F8D00413EB3 /* Build configuration list for PBXNativeTarget "codexswitchTests" */;
+			buildPhases = (
+				C01234082F6A3F8D00413EB3 /* Sources */,
+				C01234032F6A3F8D00413EB3 /* Frameworks */,
+				C01234092F6A3F8D00413EB3 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				C01234072F6A3F8D00413EB3 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				C01234022F6A3F8D00413EB3 /* codexswitchTests */,
+			);
+			name = codexswitchTests;
+			packageProductDependencies = (
+			);
+			productName = codexswitchTests;
+			productReference = C01234012F6A3F8D00413EB3 /* codexswitchTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -82,6 +130,10 @@
 				TargetAttributes = {
 					93116D802F6A3F8D00413EB3 = {
 						CreatedOnToolsVersion = 26.3;
+					};
+					C01234052F6A3F8D00413EB3 = {
+						CreatedOnToolsVersion = 26.3;
+						TestTargetID = 93116D802F6A3F8D00413EB3;
 					};
 				};
 			};
@@ -100,12 +152,20 @@
 			projectRoot = "";
 			targets = (
 				93116D802F6A3F8D00413EB3 /* codexswitch */,
+				C01234052F6A3F8D00413EB3 /* codexswitchTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		93116D7F2F6A3F8D00413EB3 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		C01234092F6A3F8D00413EB3 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -122,7 +182,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		C01234082F6A3F8D00413EB3 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		C01234072F6A3F8D00413EB3 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 93116D802F6A3F8D00413EB3 /* codexswitch */;
+			targetProxy = C01234042F6A3F8D00413EB3 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		93116D8A2F6A3F8E00413EB3 /* Debug */ = {
@@ -253,7 +328,7 @@
 				CODE_SIGNING_REQUIRED = NO;
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
 				ENABLE_PREVIEWS = YES;
@@ -265,7 +340,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.0.5;
+				MARKETING_VERSION = 0.0.6;
 				PRODUCT_BUNDLE_IDENTIFIER = com.codexswitch;
 				PRODUCT_NAME = "Codex Switch";
 				REGISTER_APP_GROUPS = YES;
@@ -288,7 +363,7 @@
 				CODE_SIGNING_REQUIRED = NO;
 				CODE_SIGN_STYLE = Manual;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 5;
+				CURRENT_PROJECT_VERSION = 6;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_HARDENED_RUNTIME = NO;
 				ENABLE_PREVIEWS = YES;
@@ -300,7 +375,7 @@
 					"$(inherited)",
 					"@executable_path/../Frameworks",
 				);
-				MARKETING_VERSION = 0.0.5;
+				MARKETING_VERSION = 0.0.6;
 				PRODUCT_BUNDLE_IDENTIFIER = com.codexswitch;
 				PRODUCT_NAME = "Codex Switch";
 				REGISTER_APP_GROUPS = YES;
@@ -310,6 +385,40 @@
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		C012340B2F6A3F8D00413EB3 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.5;
+				PRODUCT_BUNDLE_IDENTIFIER = com.codexswitch.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Codex Switch.app/Contents/MacOS/Codex Switch";
+				TEST_TARGET_NAME = codexswitch;
+			};
+			name = Debug;
+		};
+		C012340C2F6A3F8D00413EB3 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGNING_ALLOWED = NO;
+				CODE_SIGNING_REQUIRED = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 15.5;
+				PRODUCT_BUNDLE_IDENTIFIER = com.codexswitch.tests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = macosx;
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Codex Switch.app/Contents/MacOS/Codex Switch";
+				TEST_TARGET_NAME = codexswitch;
 			};
 			name = Release;
 		};
@@ -330,6 +439,15 @@
 			buildConfigurations = (
 				93116D8D2F6A3F8E00413EB3 /* Debug */,
 				93116D8E2F6A3F8E00413EB3 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		C012340A2F6A3F8D00413EB3 /* Build configuration list for PBXNativeTarget "codexswitchTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				C012340B2F6A3F8D00413EB3 /* Debug */,
+				C012340C2F6A3F8D00413EB3 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
