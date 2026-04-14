@@ -146,7 +146,7 @@ final class CodexAccountsStore: ObservableObject {
 
     func importCurrentAuth() {
         do {
-            try importAuthFile(from: activeAuthURL)
+            try importCurrentAuthPreservingActiveAccount()
             reload()
         } catch {
             errorMessage = error.localizedDescription
@@ -836,6 +836,39 @@ final class CodexAccountsStore: ObservableObject {
 
         registry.accounts.sort(by: accountSort)
         try saveRegistry(registry)
+    }
+
+    private func importCurrentAuthPreservingActiveAccount() throws {
+        guard !isImporting else { return }
+        isImporting = true
+        defer { isImporting = false }
+
+        let previousActiveKey = try currentAuthAccountKey()
+        let previousActiveActivatedAtMs = try? loadOrCreateRegistry().activeAccountActivatedAtMs
+
+        try syncCurrentAuthBestEffort()
+
+        guard let previousActiveKey else { return }
+        let importedActiveKey = try currentAuthAccountKey()
+        guard previousActiveKey != importedActiveKey else { return }
+
+        let previousSnapshotURL = accountAuthURL(for: previousActiveKey)
+        guard fileManager.fileExists(atPath: previousSnapshotURL.path) else {
+            throw StoreError.authSnapshotMissing(previousSnapshotURL.lastPathComponent)
+        }
+
+        try replaceItem(at: activeAuthURL, withItemAt: previousSnapshotURL)
+
+        var registry = try loadOrCreateRegistry()
+        registry.activeAccountKey = previousActiveKey
+        registry.activeAccountActivatedAtMs = previousActiveActivatedAtMs ?? registry.activeAccountActivatedAtMs
+        try saveRegistry(registry)
+    }
+
+    private func currentAuthAccountKey() throws -> String? {
+        guard fileManager.fileExists(atPath: activeAuthURL.path) else { return nil }
+        let authData = try Data(contentsOf: activeAuthURL)
+        return try parseAuthInfo(from: authData).recordKey
     }
 
     private func parseAuthInfo(from data: Data) throws -> ImportedAuthInfo {
