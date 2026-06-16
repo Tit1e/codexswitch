@@ -10,28 +10,38 @@ import SwiftUI
 struct MenuContentView: View {
     @ObservedObject var store: CodexAccountsStore
     @State private var pendingAction: PendingAction?
+    @State private var apiKeyInput: String = ""
+    @State private var apiBaseURLInput: String = ""
     private let appVersion = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
 
     var body: some View {
         VStack(spacing: 14) {
             header
-
-            actionBar
+            modeTabs
 
             if let pendingAction {
                 confirmationBanner(for: pendingAction)
             }
 
-            if store.accounts.isEmpty {
-                emptyState
-            } else {
-                VStack(alignment: .leading, spacing: 12) {
-                    ForEach(store.accounts) { account in
-                        accountCard(for: account)
+            if store.selectedMode == .auth {
+                authActionBar
+
+                if store.accounts.isEmpty {
+                    emptyState
+                } else {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(store.accounts) { account in
+                            accountCard(for: account)
+                        }
                     }
+                    .padding(.vertical, 2)
                 }
-                .padding(.vertical, 2)
+            } else {
+                apiKeyActionBar
+                apiKeyPanel
             }
+
+            confirmSection
 
             footer
         }
@@ -63,46 +73,42 @@ struct MenuContentView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Codex Switch")
                     .font(.system(size: 16, weight: .semibold))
-                if let active = store.activeAccount {
-                    Text("当前：\(active.email)")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                } else {
-                    Text("当前没有激活账号")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
+                Text(store.activeSummaryText)
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
             }
 
             Spacer()
 
-            VStack(alignment: .trailing, spacing: 4) {
-                Toggle(isOn: Binding(
-                    get: { store.syncOpenCodeOnSwitch },
-                    set: { store.setSyncOpenCodeOnSwitch($0) }
-                )) {
-                    EmptyView()
-                }
-                .toggleStyle(.switch)
-                .labelsHidden()
-                .disabled(!store.isOpenCodeInstalled)
+            if store.selectedMode == .auth {
+                VStack(alignment: .trailing, spacing: 4) {
+                    Toggle(isOn: Binding(
+                        get: { store.syncOpenCodeOnSwitch },
+                        set: { store.setSyncOpenCodeOnSwitch($0) }
+                    )) {
+                        EmptyView()
+                    }
+                    .toggleStyle(.switch)
+                    .labelsHidden()
+                    .disabled(!store.isOpenCodeInstalled)
 
-                Text("同步 OpenCode")
-                    .font(.system(size: 10, weight: .medium))
-                    .foregroundStyle(.secondary)
-
-                if !store.isOpenCodeInstalled {
-                    Text("未检测到 OpenCode")
-                        .font(.system(size: 10))
+                    Text("同步 OpenCode")
+                        .font(.system(size: 10, weight: .medium))
                         .foregroundStyle(.secondary)
+
+                    if !store.isOpenCodeInstalled {
+                        Text("未检测到 OpenCode")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
         }
     }
 
-    private var actionBar: some View {
+    private var authActionBar: some View {
         HStack(spacing: 8) {
-            actionButton("导入当前账号", systemImage: "square.and.arrow.down") {
+            actionButton("导入当前配置", systemImage: "square.and.arrow.down") {
                 store.importCurrentAuth()
             }
 
@@ -116,9 +122,46 @@ struct MenuContentView: View {
         }
     }
 
+    private var apiKeyActionBar: some View {
+        HStack(spacing: 8) {
+            actionButton("导入当前配置", systemImage: "square.and.arrow.down") {
+                store.importCurrentAuth()
+            }
+        }
+    }
+
+    private var modeTabs: some View {
+        HStack(spacing: 8) {
+            modeTab(title: "Auth", mode: .auth)
+            modeTab(title: "API Key", mode: .apiKey)
+        }
+    }
+
+    private func modeTab(title: String, mode: CredentialMode) -> some View {
+        let isSelected = store.selectedMode == mode
+        return Button {
+            store.selectMode(mode)
+            if mode == .apiKey {
+                apiKeyInput = store.draftAPIKey
+                apiBaseURLInput = store.draftAPIBaseURL
+            }
+        } label: {
+            Text(title)
+                .font(.system(size: 12, weight: .semibold))
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 8)
+        }
+        .buttonStyle(.plain)
+        .background(isSelected ? Color.black.opacity(0.08) : Color.white.opacity(0.08), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(isSelected ? Color.black.opacity(0.12) : Color.white.opacity(0.15), lineWidth: 1)
+        )
+    }
+
     private var emptyState: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(store.errorMessage ?? "还没有可切换的 Codex 账号")
+            Text(store.errorMessage ?? "还没有可切换的 Auth 授权")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -129,6 +172,77 @@ struct MenuContentView: View {
                         .stroke(Color.white.opacity(0.14), lineWidth: 1)
                 )
         }
+    }
+
+    private var apiKeyPanel: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("API Key")
+                .font(.system(size: 12, weight: .semibold))
+
+            Text(store.apiKeySourceDescription.map { "来源：\($0)" } ?? "来源：当前文件或最近一次备份")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+
+            SecureField("输入 OPENAI_API_KEY", text: Binding(
+                get: { apiKeyInput },
+                set: { newValue in
+                    apiKeyInput = newValue
+                    store.updateDraftAPIKey(newValue)
+                }
+            ))
+            .textFieldStyle(.roundedBorder)
+
+            Text(store.apiBaseURLSourceDescription.map { "请求地址来源：\($0)" } ?? "请求地址来源：当前 config.toml 或最近一次备份")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+
+            TextField("输入请求地址，如 http://127.0.0.1:8888/v1", text: Binding(
+                get: { apiBaseURLInput },
+                set: { newValue in
+                    apiBaseURLInput = newValue
+                    store.updateDraftAPIBaseURL(newValue)
+                }
+            ))
+            .textFieldStyle(.roundedBorder)
+
+            Text("API Key 模式不支持用量读取")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .overlay(
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(Color.white.opacity(0.14), lineWidth: 1)
+        )
+        .onAppear {
+            apiKeyInput = store.draftAPIKey
+            apiBaseURLInput = store.draftAPIBaseURL
+        }
+    }
+
+    private var confirmSection: some View {
+        HStack(spacing: 8) {
+            Button(store.confirmButtonTitle) {
+                store.confirmModeSwitch()
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(!store.canConfirmSelection)
+
+            if store.selectedMode == .auth, let selected = store.selectedAuthAccount, store.canConfirmSelection {
+                Text("待切换：\(selected.email)")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+
+            if store.selectedMode == .apiKey, store.canConfirmSelection {
+                Text("确认后会先备份当前 auth.json 和 config.toml")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var footer: some View {
@@ -245,7 +359,8 @@ struct MenuContentView: View {
     }
 
     private func accountCard(for account: CodexAccount) -> some View {
-        let isActive = store.activeAccountKey == account.accountKey
+        let isActive = store.activeMode == .auth && store.activeAccountKey == account.accountKey
+        let isPending = store.pendingAuthAccountKey == account.accountKey
 
         return VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 10) {
@@ -277,8 +392,8 @@ struct MenuContentView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
                 .onTapGesture {
-                    if !isActive {
-                        pendingAction = .switchAccount(account)
+                    if !isActive || store.selectedMode != .auth {
+                        store.selectAuthAccount(account)
                     }
                 }
 
@@ -287,15 +402,15 @@ struct MenuContentView: View {
 
         }
         .padding(12)
-        .background(cardBackground(for: account, isActive: isActive), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(cardBackground(for: account, isActive: isActive, isPending: isPending), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(cardOverlayColor(for: account, isActive: isActive))
+                .fill(cardOverlayColor(for: account, isActive: isActive, isPending: isPending))
                 .allowsHitTesting(false)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(cardBorderColor(for: account, isActive: isActive), lineWidth: 1)
+                .stroke(cardBorderColor(for: account, isActive: isActive, isPending: isPending), lineWidth: 1)
                 .allowsHitTesting(false)
         )
     }
@@ -312,9 +427,12 @@ struct MenuContentView: View {
         }
     }
 
-    private func cardBackground(for account: CodexAccount, isActive: Bool) -> some ShapeStyle {
+    private func cardBackground(for account: CodexAccount, isActive: Bool, isPending: Bool) -> some ShapeStyle {
         if account.lastUsageStatus == .accountIssue {
             return AnyShapeStyle(Color.red.opacity(0.16))
+        }
+        if isPending {
+            return AnyShapeStyle(Color.accentColor.opacity(0.12))
         }
         if isActive {
             return AnyShapeStyle(.ultraThinMaterial)
@@ -322,9 +440,12 @@ struct MenuContentView: View {
         return AnyShapeStyle(.thinMaterial)
     }
 
-    private func cardOverlayColor(for account: CodexAccount, isActive: Bool) -> Color {
+    private func cardOverlayColor(for account: CodexAccount, isActive: Bool, isPending: Bool) -> Color {
         if account.lastUsageStatus == .accountIssue {
             return Color.red.opacity(0.08)
+        }
+        if isPending {
+            return Color.accentColor.opacity(0.05)
         }
         if isActive {
             return Color.green.opacity(0.12)
@@ -332,9 +453,12 @@ struct MenuContentView: View {
         return .clear
     }
 
-    private func cardBorderColor(for account: CodexAccount, isActive: Bool) -> Color {
+    private func cardBorderColor(for account: CodexAccount, isActive: Bool, isPending: Bool) -> Color {
         if account.lastUsageStatus == .accountIssue {
             return Color.red.opacity(0.34)
+        }
+        if isPending {
+            return Color.accentColor.opacity(0.4)
         }
         if isActive {
             return Color.green.opacity(0.22)
@@ -448,8 +572,6 @@ struct MenuContentView: View {
         pendingAction = nil
         DispatchQueue.main.async {
             switch action {
-            case .switchAccount(let account):
-                store.switchAccount(account)
             case .deleteAccount(let account):
                 store.deleteAccount(account)
             }
@@ -467,13 +589,10 @@ struct MenuContentView: View {
 }
 
 private enum PendingAction {
-    case switchAccount(CodexAccount)
     case deleteAccount(CodexAccount)
 
     var confirmTitle: String {
         switch self {
-        case .switchAccount:
-            return "确认切换"
         case .deleteAccount:
             return "确认删除"
         }
@@ -481,8 +600,6 @@ private enum PendingAction {
 
     var buttonRole: ButtonRole? {
         switch self {
-        case .switchAccount:
-            return nil
         case .deleteAccount:
             return .destructive
         }
@@ -490,8 +607,6 @@ private enum PendingAction {
 
     var backgroundColor: Color {
         switch self {
-        case .switchAccount:
-            return .blue
         case .deleteAccount:
             return .red
         }
@@ -499,8 +614,6 @@ private enum PendingAction {
 
     func title(store: CodexAccountsStore) -> String {
         switch self {
-        case .switchAccount:
-            return "确认切换账号"
         case .deleteAccount:
             return "确认删除账号"
         }
@@ -509,8 +622,6 @@ private enum PendingAction {
     @MainActor
     func message(store: CodexAccountsStore) -> String {
         switch self {
-        case .switchAccount(let account):
-            return "将切换到 \(account.email)。"
         case .deleteAccount(let account):
             return "将删除 \(account.email) 的本地快照，此操作不会删除远端账号。"
         }

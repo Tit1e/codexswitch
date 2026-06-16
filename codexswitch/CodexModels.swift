@@ -7,6 +7,11 @@
 
 import Foundation
 
+enum CredentialMode: String, Codable {
+    case auth
+    case apiKey = "api_key"
+}
+
 enum UsageHealthStatus: String, Codable {
     case ok
     case accountIssue = "account_issue"
@@ -15,19 +20,23 @@ enum UsageHealthStatus: String, Codable {
 
 struct CodexRegistry: Codable {
     var schemaVersion: Int
+    var activeMode: CredentialMode
     var activeAccountKey: String?
     var activeAccountActivatedAtMs: Int64?
     var autoSwitch: AutoSwitchConfig
     var api: ApiConfig
+    var apiKeyProfile: ApiKeyProfile?
     var syncOpenCodeOnSwitch: Bool
     var accounts: [CodexAccount]
 
     enum CodingKeys: String, CodingKey {
         case schemaVersion = "schema_version"
+        case activeMode = "active_mode"
         case activeAccountKey = "active_account_key"
         case activeAccountActivatedAtMs = "active_account_activated_at_ms"
         case autoSwitch = "auto_switch"
         case api
+        case apiKeyProfile = "api_key_profile"
         case syncOpenCodeOnSwitch = "sync_opencode_on_switch"
         case accounts
     }
@@ -37,10 +46,12 @@ extension CodexRegistry {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         schemaVersion = try container.decode(Int.self, forKey: .schemaVersion)
+        activeMode = try container.decodeIfPresent(CredentialMode.self, forKey: .activeMode) ?? .auth
         activeAccountKey = try container.decodeIfPresent(String.self, forKey: .activeAccountKey)
         activeAccountActivatedAtMs = try container.decodeIfPresent(Int64.self, forKey: .activeAccountActivatedAtMs)
         autoSwitch = try container.decode(AutoSwitchConfig.self, forKey: .autoSwitch)
         api = try container.decode(ApiConfig.self, forKey: .api)
+        apiKeyProfile = try container.decodeIfPresent(ApiKeyProfile.self, forKey: .apiKeyProfile)
         syncOpenCodeOnSwitch = try container.decodeIfPresent(Bool.self, forKey: .syncOpenCodeOnSwitch) ?? false
         accounts = try container.decode([CodexAccount].self, forKey: .accounts)
     }
@@ -105,6 +116,24 @@ struct RolloutSignature: Codable {
     enum CodingKeys: String, CodingKey {
         case path
         case eventTimestampMs = "event_timestamp_ms"
+    }
+}
+
+struct ApiKeyProfile: Codable, Equatable {
+    var apiKey: String
+    var fingerprint: String
+    var sourcePath: String?
+    var baseURL: String?
+    var baseURLSourcePath: String?
+    var updatedAt: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case apiKey = "api_key"
+        case fingerprint
+        case sourcePath = "source_path"
+        case baseURL = "base_url"
+        case baseURLSourcePath = "base_url_source_path"
+        case updatedAt = "updated_at"
     }
 }
 

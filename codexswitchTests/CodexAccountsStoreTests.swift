@@ -44,8 +44,8 @@ final class CodexAccountsStoreTests: XCTestCase {
         let auth = try harness.readOpenCodeAuthObject()
         let openAI = try XCTUnwrap(auth["openai"] as? [String: Any])
         XCTAssertEqual(openAI["type"] as? String, "oauth")
-        XCTAssertEqual(openAI["access"] as? String, "access-token")
-        XCTAssertEqual(openAI["refresh"] as? String, "refresh-token")
+        XCTAssertEqual(openAI["access"] as? String, "access-token-acc-123")
+        XCTAssertEqual(openAI["refresh"] as? String, "refresh-token-acc-123")
         XCTAssertEqual(openAI["accountId"] as? String, "acc-123")
         XCTAssertNotNil(openAI["expires"] as? NSNumber)
     }
@@ -110,6 +110,126 @@ final class CodexAccountsStoreTests: XCTestCase {
         XCTAssertEqual(imported.email, "second@example.com")
         XCTAssertTrue(harness.accountSnapshotExists(store: store, accountKey: imported.accountKey))
         XCTAssertEqual(try harness.readActiveAuthAccountKey(store: store), original.accountKey)
+    }
+
+    func testReloadRecognizesAPIKeyMode() throws {
+        let harness = try StoreTestHarness()
+        let store = harness.makeStore()
+
+        try harness.writeActiveAPIKey(store: store, apiKey: "sk-test-12345678")
+        try harness.writeConfigBaseURL(store: store, baseURL: "http://127.0.0.1:8888/v1")
+        store.reload()
+
+        XCTAssertEqual(store.activeMode, .apiKey)
+        XCTAssertEqual(store.selectedMode, .apiKey)
+        XCTAssertEqual(store.activeAPIKeyFingerprint, "sk-t...5678")
+        XCTAssertEqual(store.draftAPIKey, "sk-test-12345678")
+        XCTAssertEqual(store.draftAPIBaseURL, "http://127.0.0.1:8888/v1")
+    }
+
+    func testInitialSelectedModeMatchesCurrentAuthMode() throws {
+        let harness = try StoreTestHarness()
+        try harness.writeActiveAPIKeyRaw(apiKey: "sk-test-12345678")
+        try harness.writeConfigBaseURLRaw(baseURL: "http://127.0.0.1:8888/v1")
+
+        let store = harness.makeStore()
+
+        XCTAssertEqual(store.activeMode, .apiKey)
+        XCTAssertEqual(store.selectedMode, .apiKey)
+    }
+
+    func testConfirmModeSwitchWritesAPIKeyAuthJSON() throws {
+        let harness = try StoreTestHarness()
+        let store = harness.makeStore()
+        _ = try harness.seedSingleAccount(store: store)
+
+        store.selectMode(.apiKey)
+        store.updateDraftAPIKey("sk-live-abcdefgh")
+        store.updateDraftAPIBaseURL("http://127.0.0.1:9000/v1")
+        store.confirmModeSwitch()
+
+        let object = try harness.readCodexAuthObject()
+        XCTAssertEqual(object["OPENAI_API_KEY"] as? String, "sk-live-abcdefgh")
+        XCTAssertEqual(object["auth_mode"] as? String, "apikey")
+        XCTAssertEqual(store.activeMode, .apiKey)
+        XCTAssertEqual(try harness.readConfigBaseURL(store: store), "http://127.0.0.1:9000/v1")
+    }
+
+    func testConfirmModeSwitchBackToAuthRestoresSelectedAccount() throws {
+        let harness = try StoreTestHarness()
+        let store = harness.makeStore()
+        let account = try harness.seedSingleAccount(store: store)
+
+        store.selectMode(.apiKey)
+        store.updateDraftAPIKey("sk-live-abcdefgh")
+        store.confirmModeSwitch()
+
+        store.selectMode(.auth)
+        store.selectAuthAccount(account)
+        store.confirmModeSwitch()
+
+        XCTAssertEqual(store.activeMode, .auth)
+        XCTAssertEqual(try harness.readActiveAuthAccountKey(store: store), account.accountKey)
+    }
+
+    func testReloadPreservesAPIKeyDraftWhileEditing() throws {
+        let harness = try StoreTestHarness()
+        let store = harness.makeStore()
+
+        try harness.writeActiveAPIKey(store: store, apiKey: "sk-test-12345678")
+        try harness.writeConfigBaseURL(store: store, baseURL: "http://127.0.0.1:8888/v1")
+        store.reload()
+        store.selectMode(.apiKey)
+        store.updateDraftAPIKey("sk-draft-87654321")
+        store.updateDraftAPIBaseURL("http://127.0.0.1:9999/v1")
+
+        store.reload()
+
+        XCTAssertEqual(store.selectedMode, .apiKey)
+        XCTAssertEqual(store.draftAPIKey, "sk-draft-87654321")
+        XCTAssertEqual(store.draftAPIBaseURL, "http://127.0.0.1:9999/v1")
+    }
+
+    func testSameActiveAPIKeyDisablesConfirm() throws {
+        let harness = try StoreTestHarness()
+        let store = harness.makeStore()
+
+        try harness.writeActiveAPIKey(store: store, apiKey: "sk-test-12345678")
+        try harness.writeConfigBaseURL(store: store, baseURL: "http://127.0.0.1:8888/v1")
+        store.reload()
+        store.selectMode(.apiKey)
+        store.updateDraftAPIKey("sk-test-12345678")
+        store.updateDraftAPIBaseURL("http://127.0.0.1:8888/v1")
+
+        XCTAssertFalse(store.canConfirmSelection)
+    }
+
+    func testChangingOnlyAPIBaseURLEnablesConfirm() throws {
+        let harness = try StoreTestHarness()
+        let store = harness.makeStore()
+
+        try harness.writeActiveAPIKey(store: store, apiKey: "sk-test-12345678")
+        try harness.writeConfigBaseURL(store: store, baseURL: "http://127.0.0.1:8888/v1")
+        store.reload()
+        store.selectMode(.apiKey)
+        store.updateDraftAPIKey("sk-test-12345678")
+        store.updateDraftAPIBaseURL("http://127.0.0.1:9999/v1")
+
+        XCTAssertTrue(store.canConfirmSelection)
+    }
+
+    func testConfirmModeSwitchBacksUpConfigWhenAPIBaseURLChanges() throws {
+        let harness = try StoreTestHarness()
+        let store = harness.makeStore()
+        _ = try harness.seedSingleAccount(store: store)
+        try harness.writeConfigBaseURL(store: store, baseURL: "http://127.0.0.1:8888/v1")
+
+        store.selectMode(.apiKey)
+        store.updateDraftAPIKey("sk-live-abcdefgh")
+        store.updateDraftAPIBaseURL("http://127.0.0.1:9999/v1")
+        store.confirmModeSwitch()
+
+        XCTAssertTrue(harness.configBackupExists())
     }
 }
 
@@ -240,6 +360,11 @@ private struct StoreTestHarness {
         try Data(contentsOf: rootURL.appendingPathComponent(".codex/auth.json"))
     }
 
+    func readCodexAuthObject() throws -> [String: Any] {
+        let object = try JSONSerialization.jsonObject(with: readCodexAuth())
+        return try XCTUnwrap(object as? [String: Any])
+    }
+
     func readOpenCodeAuth() throws -> Data {
         try Data(contentsOf: rootURL.appendingPathComponent(".local/share/opencode/auth.json"))
     }
@@ -253,5 +378,61 @@ private struct StoreTestHarness {
         let url = rootURL.appendingPathComponent(".codex/accounts/registry.json")
         let object = try JSONSerialization.jsonObject(with: Data(contentsOf: url))
         return try XCTUnwrap(object as? [String: Any])
+    }
+
+    func writeActiveAPIKey(store: CodexAccountsStore, apiKey: String) throws {
+        try FileManager.default.createDirectory(at: store.codexHomeURL, withIntermediateDirectories: true)
+        let object: [String: String] = [
+            "OPENAI_API_KEY": apiKey,
+            "auth_mode": "apikey"
+        ]
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+        try data.write(to: store.activeAuthURL)
+    }
+
+    func writeActiveAPIKeyRaw(apiKey: String) throws {
+        let codexHomeURL = rootURL.appendingPathComponent(".codex", isDirectory: true)
+        try FileManager.default.createDirectory(at: codexHomeURL, withIntermediateDirectories: true)
+        let object: [String: String] = [
+            "OPENAI_API_KEY": apiKey,
+            "auth_mode": "apikey"
+        ]
+        let data = try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+        try data.write(to: codexHomeURL.appendingPathComponent("auth.json"))
+    }
+
+    func writeConfigBaseURL(store: CodexAccountsStore, baseURL: String) throws {
+        try FileManager.default.createDirectory(at: store.codexHomeURL, withIntermediateDirectories: true)
+        let content = """
+        [model_providers.cpa]
+        base_url = "\(baseURL)"
+        """
+        try Data((content + "\n").utf8).write(to: store.codexConfigURL)
+    }
+
+    func writeConfigBaseURLRaw(baseURL: String) throws {
+        let codexHomeURL = rootURL.appendingPathComponent(".codex", isDirectory: true)
+        try FileManager.default.createDirectory(at: codexHomeURL, withIntermediateDirectories: true)
+        let content = """
+        [model_providers.cpa]
+        base_url = "\(baseURL)"
+        """
+        try Data((content + "\n").utf8).write(to: codexHomeURL.appendingPathComponent("config.toml"))
+    }
+
+    func readConfigBaseURL(store: CodexAccountsStore) throws -> String {
+        let content = try String(contentsOf: store.codexConfigURL, encoding: .utf8)
+        let prefix = "base_url = \""
+        guard let line = content.components(separatedBy: .newlines).first(where: { $0.contains(prefix) }) else {
+            return ""
+        }
+        let value = line.replacingOccurrences(of: prefix, with: "")
+        return value.replacingOccurrences(of: "\"", with: "")
+    }
+
+    func configBackupExists() -> Bool {
+        let backupsURL = rootURL.appendingPathComponent(".codex/accounts", isDirectory: true)
+        guard let items = try? FileManager.default.contentsOfDirectory(atPath: backupsURL.path) else { return false }
+        return items.contains(where: { $0.hasPrefix("config.bak.") && $0.hasSuffix(".toml") })
     }
 }

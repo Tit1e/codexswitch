@@ -13,6 +13,14 @@ import Foundation
 final class CodexAccountsStore: ObservableObject {
     @Published private(set) var accounts: [CodexAccount] = []
     @Published private(set) var activeAccountKey: String?
+    @Published private(set) var activeMode: CredentialMode = .auth
+    @Published var selectedMode: CredentialMode = .auth
+    @Published var pendingAuthAccountKey: String?
+    @Published var draftAPIKey: String = ""
+    @Published var draftAPIBaseURL: String = ""
+    @Published private(set) var activeAPIKeyFingerprint: String?
+    @Published private(set) var apiKeySourceDescription: String?
+    @Published private(set) var apiBaseURLSourceDescription: String?
     @Published private(set) var isSwitching = false
     @Published private(set) var isImporting = false
     @Published private(set) var isRefreshingUsage = false
@@ -38,12 +46,16 @@ final class CodexAccountsStore: ObservableObject {
     private let decoder = JSONDecoder()
     private var timerCancellable: AnyCancellable?
     private var lastUsageRefreshAt: Date?
+    private var activeAPIKeyValue: String?
+    private var activeAPIBaseURLValue: String?
+    private var hasInitializedSelectedMode = false
     private let isOpenCodeCommandAvailable: () -> Bool
 
     let codexHomeURL: URL
     let accountsDirectoryURL: URL
     let registryURL: URL
     let activeAuthURL: URL
+    let codexConfigURL: URL
     let openCodeDataURL: URL
     let openCodeAuthURL: URL
 
@@ -57,6 +69,7 @@ final class CodexAccountsStore: ObservableObject {
         accountsDirectoryURL = self.codexHomeURL.appendingPathComponent("accounts", isDirectory: true)
         registryURL = accountsDirectoryURL.appendingPathComponent("registry.json")
         activeAuthURL = self.codexHomeURL.appendingPathComponent("auth.json")
+        codexConfigURL = self.codexHomeURL.appendingPathComponent("config.toml")
         self.openCodeDataURL = openCodeDataURL ?? homeURL.appendingPathComponent(".local/share/opencode", isDirectory: true)
         openCodeAuthURL = self.openCodeDataURL.appendingPathComponent("auth.json")
         self.isOpenCodeCommandAvailable = isOpenCodeCommandAvailable
@@ -71,7 +84,12 @@ final class CodexAccountsStore: ObservableObject {
     }
 
     var statusIconName: String {
-        activeAccountKey == nil ? "person.crop.circle.badge.questionmark" : "person.crop.circle.badge.checkmark"
+        switch activeMode {
+        case .auth:
+            return activeAccountKey == nil ? "person.crop.circle.badge.questionmark" : "person.crop.circle.badge.checkmark"
+        case .apiKey:
+            return activeAPIKeyFingerprint == nil ? "key.slash" : "key.fill"
+        }
     }
 
     var activeAccount: CodexAccount? {
@@ -79,20 +97,97 @@ final class CodexAccountsStore: ObservableObject {
         return accounts.first(where: { $0.accountKey == activeAccountKey })
     }
 
+    var selectedAuthAccount: CodexAccount? {
+        guard let pendingAuthAccountKey else { return nil }
+        return accounts.first(where: { $0.accountKey == pendingAuthAccountKey })
+    }
+
+    var activeSummaryText: String {
+        switch activeMode {
+        case .auth:
+            if let activeAccount {
+                return "当前：Auth · \(activeAccount.email)"
+            }
+            return "当前没有激活授权"
+        case .apiKey:
+            if let activeAPIKeyFingerprint, let activeAPIBaseURLValue, !activeAPIBaseURLValue.isEmpty {
+                return "当前：API Key · \(activeAPIKeyFingerprint) · \(activeAPIBaseURLValue)"
+            }
+            if let activeAPIKeyFingerprint {
+                return "当前：API Key · \(activeAPIKeyFingerprint)"
+            }
+            return "当前没有激活 API Key"
+        }
+    }
+
+    var canConfirmSelection: Bool {
+        switch selectedMode {
+        case .auth:
+            guard let pendingAuthAccountKey else { return false }
+            return activeMode != .auth || pendingAuthAccountKey != activeAccountKey
+        case .apiKey:
+            let trimmed = draftAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return false }
+            let trimmedBaseURL = normalizedAPIBaseURLDraft()
+            return activeMode != .apiKey
+                || trimmed != (activeAPIKeyValue ?? "")
+                || trimmedBaseURL != (activeAPIBaseURLValue ?? "")
+        }
+    }
+
+    var confirmButtonTitle: String {
+        switch selectedMode {
+        case .auth:
+            let email = selectedAuthAccount?.email ?? "所选授权"
+            return activeMode == .auth ? "确认切换到 \(email)" : "确认切换到 Auth（\(email)）"
+        case .apiKey:
+            return activeMode == .apiKey ? "确认保存并应用 API Key" : "确认切换到 API Key"
+        }
+    }
+
     func reload() {
+        let previousSelectedMode = selectedMode
+        let previousPendingAuthAccountKey = pendingAuthAccountKey
+        let previousDraftAPIKey = draftAPIKey
+        let previousDraftAPIBaseURL = draftAPIBaseURL
         do {
             try syncCurrentAuthBestEffort()
             let registry = try loadRegistry()
             accounts = registry.accounts.sorted(by: accountSort)
+            activeMode = registry.activeMode
             activeAccountKey = registry.activeAccountKey
+            activeAPIKeyValue = registry.apiKeyProfile?.apiKey
+            activeAPIBaseURLValue = registry.apiKeyProfile?.baseURL
+            activeAPIKeyFingerprint = registry.apiKeyProfile?.fingerprint
+            selectedMode = hasInitializedSelectedMode ? previousSelectedMode : registry.activeMode
+            pendingAuthAccountKey = previousPendingAuthAccountKey ?? registry.activeAccountKey ?? accounts.first?.accountKey
+            draftAPIKey = selectedMode == .apiKey && !previousDraftAPIKey.isEmpty
+                ? previousDraftAPIKey
+                : (registry.apiKeyProfile?.apiKey ?? "")
+            draftAPIBaseURL = selectedMode == .apiKey && !previousDraftAPIBaseURL.isEmpty
+                ? previousDraftAPIBaseURL
+                : (registry.apiKeyProfile?.baseURL ?? "")
+            apiKeySourceDescription = registry.apiKeyProfile?.sourcePath
+            apiBaseURLSourceDescription = registry.apiKeyProfile?.baseURLSourcePath
             syncOpenCodeOnSwitch = registry.syncOpenCodeOnSwitch
             isOpenCodeInstalled = detectOpenCodeInstallation()
             errorMessage = nil
             lastUpdatedAt = .now
+            hasInitializedSelectedMode = true
             scheduleUsageRefreshIfNeeded()
         } catch {
             accounts = []
+            activeMode = .auth
+            selectedMode = .auth
             activeAccountKey = nil
+            pendingAuthAccountKey = nil
+            draftAPIKey = ""
+            draftAPIBaseURL = ""
+            activeAPIKeyValue = nil
+            activeAPIBaseURLValue = nil
+            activeAPIKeyFingerprint = nil
+            apiKeySourceDescription = nil
+            apiBaseURLSourceDescription = nil
             syncOpenCodeOnSwitch = false
             isOpenCodeInstalled = detectOpenCodeInstallation()
             errorMessage = error.localizedDescription
@@ -105,39 +200,10 @@ final class CodexAccountsStore: ObservableObject {
         defer { isSwitching = false }
 
         do {
-            var registry = try loadRegistry()
-            guard registry.accounts.contains(where: { $0.accountKey == account.accountKey }) else {
-                throw StoreError.accountNotFound
-            }
-
-            let sourceURL = accountAuthURL(for: account.accountKey)
-            guard fileManager.fileExists(atPath: sourceURL.path) else {
-                throw StoreError.authSnapshotMissing(sourceURL.lastPathComponent)
-            }
-
-            try ensureAccountsDirectory()
-            try backupActiveAuthIfNeeded(using: sourceURL)
-            try replaceItem(at: activeAuthURL, withItemAt: sourceURL)
-
-            registry.activeAccountKey = account.accountKey
-            registry.activeAccountActivatedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
-            let now = Int64(Date().timeIntervalSince1970)
-            registry.accounts = registry.accounts.map { existing in
-                var updated = existing
-                if updated.accountKey == account.accountKey {
-                    updated.lastUsedAt = now
-                }
-                return updated
-            }
-
-            try saveRegistry(registry)
-
-            do {
-                try syncOpenCodeAuthIfNeeded(using: sourceURL, registry: registry)
-                reload()
-            } catch {
-                reload()
-                errorMessage = "Codex 已切换，但 OpenCode 同步失败"
+            let partialMessage = try performAuthSwitch(to: account)
+            reload()
+            if let partialMessage {
+                errorMessage = partialMessage
             }
         } catch {
             errorMessage = error.localizedDescription
@@ -156,7 +222,69 @@ final class CodexAccountsStore: ObservableObject {
     func addNewAccount() {
         do {
             try launchCodexLoginInTerminal()
-            errorMessage = "Terminal 已打开 `codex login`。登录完成后点“导入当前账号”。"
+            errorMessage = "Terminal 已打开 `codex login`。登录完成后点“导入当前配置”。"
+        } catch {
+            errorMessage = error.localizedDescription
+        }
+    }
+
+    func selectMode(_ mode: CredentialMode) {
+        selectedMode = mode
+        if mode == .auth {
+            pendingAuthAccountKey = activeAccountKey ?? accounts.first?.accountKey
+        } else if draftAPIKey.isEmpty {
+            do {
+                if let profile = try loadLatestAPIKeyProfile() {
+                    draftAPIKey = profile.apiKey
+                    draftAPIBaseURL = profile.baseURL ?? ""
+                    apiKeySourceDescription = profile.sourcePath
+                    apiBaseURLSourceDescription = profile.baseURLSourcePath
+                }
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        } else {
+            apiKeySourceDescription = activeMode == .apiKey ? activeAuthURL.path : apiKeySourceDescription
+            apiBaseURLSourceDescription = activeMode == .apiKey ? codexConfigURL.path : apiBaseURLSourceDescription
+        }
+    }
+
+    func selectAuthAccount(_ account: CodexAccount) {
+        pendingAuthAccountKey = account.accountKey
+    }
+
+    func updateDraftAPIKey(_ value: String) {
+        draftAPIKey = value
+    }
+
+    func updateDraftAPIBaseURL(_ value: String) {
+        draftAPIBaseURL = value
+    }
+
+    func confirmModeSwitch() {
+        guard !isSwitching else { return }
+        isSwitching = true
+        defer { isSwitching = false }
+
+        do {
+            switch selectedMode {
+            case .auth:
+                guard let account = selectedAuthAccount ?? activeAccount else {
+                    throw StoreError.accountNotFound
+                }
+                let partialMessage = try performAuthSwitch(to: account)
+                reload()
+                if let partialMessage {
+                    errorMessage = partialMessage
+                }
+            case .apiKey:
+                let trimmed = draftAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !trimmed.isEmpty else {
+                    throw StoreError.invalidAuthFile("API Key 不能为空")
+                }
+                try switchToAPIKey(trimmed, baseURL: normalizedAPIBaseURLDraft())
+                reload()
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -354,11 +482,13 @@ final class CodexAccountsStore: ObservableObject {
             return try loadRegistry()
         }
         return CodexRegistry(
-            schemaVersion: 5,
+            schemaVersion: 6,
+            activeMode: .auth,
             activeAccountKey: nil,
             activeAccountActivatedAtMs: nil,
             autoSwitch: AutoSwitchConfig(),
             api: ApiConfig(),
+            apiKeyProfile: nil,
             syncOpenCodeOnSwitch: false,
             accounts: []
         )
@@ -367,7 +497,7 @@ final class CodexAccountsStore: ObservableObject {
     private func saveRegistry(_ registry: CodexRegistry) throws {
         try ensureAccountsDirectory()
         var registry = registry
-        registry.schemaVersion = 5
+        registry.schemaVersion = 6
         let data = try encoder.encode(registry)
         try writeAtomically(data: data, to: registryURL)
     }
@@ -402,6 +532,10 @@ final class CodexAccountsStore: ObservableObject {
         }
     }
 
+    private func normalizedAPIBaseURLDraft() -> String {
+        draftAPIBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     private func backupActiveAuthIfNeeded(using sourceURL: URL) throws {
         guard fileManager.fileExists(atPath: activeAuthURL.path) else { return }
         let current = try Data(contentsOf: activeAuthURL)
@@ -411,7 +545,20 @@ final class CodexAccountsStore: ObservableObject {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyyMMdd-HHmmss"
-        let backupURL = accountsDirectoryURL.appendingPathComponent("auth.json.bak.\(formatter.string(from: .now))")
+        let modeSuffix = (try? detectCredential(in: current).mode.rawValue) ?? "unknown"
+        let backupURL = accountsDirectoryURL.appendingPathComponent("auth.\(modeSuffix).bak.\(formatter.string(from: .now)).json")
+        try current.write(to: backupURL, options: .atomic)
+    }
+
+    private func backupConfigIfNeeded(with incomingData: Data) throws {
+        guard fileManager.fileExists(atPath: codexConfigURL.path) else { return }
+        let current = try Data(contentsOf: codexConfigURL)
+        guard current != incomingData else { return }
+
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let backupURL = accountsDirectoryURL.appendingPathComponent("config.bak.\(formatter.string(from: .now)).toml")
         try current.write(to: backupURL, options: .atomic)
     }
 
@@ -443,47 +590,62 @@ final class CodexAccountsStore: ObservableObject {
         guard fileManager.fileExists(atPath: activeAuthURL.path) else { return }
 
         let authData = try Data(contentsOf: activeAuthURL)
-        let info = try parseAuthInfo(from: authData)
         try ensureAccountsDirectory()
 
         var registry = try loadOrCreateRegistry()
-        let destinationURL = accountAuthURL(for: info.recordKey)
-        try writeAtomically(data: authData, to: destinationURL)
+        let detected = try detectCredential(in: authData)
+        switch detected {
+        case .auth(let info):
+            let destinationURL = accountAuthURL(for: info.recordKey)
+            try writeAtomically(data: authData, to: destinationURL)
 
-        let nowSeconds = Int64(Date().timeIntervalSince1970)
-        if let existingIndex = registry.accounts.firstIndex(where: { $0.accountKey == info.recordKey }) {
-            var existing = registry.accounts[existingIndex]
-            existing.chatgptAccountID = info.accountID
-            existing.chatgptUserID = info.userID
-            existing.email = info.email
-            existing.plan = info.plan
-            existing.authMode = "chatgpt"
-            registry.accounts[existingIndex] = existing
-        } else {
-            registry.accounts.append(
-                CodexAccount(
-                    accountKey: info.recordKey,
-                    chatgptAccountID: info.accountID,
-                    chatgptUserID: info.userID,
-                    email: info.email,
-                    alias: "",
-                    plan: info.plan,
-                    authMode: "chatgpt",
-                    createdAt: nowSeconds,
-                    lastUsedAt: nil,
-                    lastUsage: nil,
-                    lastUsageAt: nil,
-                    lastUsageStatus: nil,
-                    lastUsageErrorMessage: nil,
-                    lastLocalRollout: nil
+            let nowSeconds = Int64(Date().timeIntervalSince1970)
+            if let existingIndex = registry.accounts.firstIndex(where: { $0.accountKey == info.recordKey }) {
+                var existing = registry.accounts[existingIndex]
+                existing.chatgptAccountID = info.accountID
+                existing.chatgptUserID = info.userID
+                existing.email = info.email
+                existing.plan = info.plan
+                existing.authMode = "chatgpt"
+                registry.accounts[existingIndex] = existing
+            } else {
+                registry.accounts.append(
+                    CodexAccount(
+                        accountKey: info.recordKey,
+                        chatgptAccountID: info.accountID,
+                        chatgptUserID: info.userID,
+                        email: info.email,
+                        alias: "",
+                        plan: info.plan,
+                        authMode: "chatgpt",
+                        createdAt: nowSeconds,
+                        lastUsedAt: nil,
+                        lastUsage: nil,
+                        lastUsageAt: nil,
+                        lastUsageStatus: nil,
+                        lastUsageErrorMessage: nil,
+                        lastLocalRollout: nil
+                    )
                 )
-            )
-        }
+            }
 
-        registry.activeAccountKey = info.recordKey
-        registry.activeAccountActivatedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
-        if let activeIndex = registry.accounts.firstIndex(where: { $0.accountKey == info.recordKey }) {
-            registry.accounts[activeIndex].lastUsedAt = nowSeconds
+            registry.activeMode = .auth
+            registry.activeAccountKey = info.recordKey
+            registry.activeAccountActivatedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
+            if let activeIndex = registry.accounts.firstIndex(where: { $0.accountKey == info.recordKey }) {
+                registry.accounts[activeIndex].lastUsedAt = nowSeconds
+            }
+        case .apiKey(let info):
+            let currentBaseURL = try loadCurrentAPIBaseURL()
+            registry.activeMode = .apiKey
+            registry.apiKeyProfile = ApiKeyProfile(
+                apiKey: info.apiKey,
+                fingerprint: info.fingerprint,
+                sourcePath: activeAuthURL.path,
+                baseURL: currentBaseURL,
+                baseURLSourcePath: currentBaseURL == nil ? nil : codexConfigURL.path,
+                updatedAt: Int64(Date().timeIntervalSince1970)
+            )
         }
 
         registry.accounts.sort(by: accountSort)
@@ -796,41 +958,50 @@ final class CodexAccountsStore: ObservableObject {
         }
 
         let authData = try Data(contentsOf: sourceURL)
-        let info = try parseAuthInfo(from: authData)
-
         try ensureAccountsDirectory()
         var registry = try loadOrCreateRegistry()
-        let destinationURL = accountAuthURL(for: info.recordKey)
-        try writeAtomically(data: authData, to: destinationURL)
 
-        let nowSeconds = Int64(Date().timeIntervalSince1970)
-        let existingIndex = registry.accounts.firstIndex(where: { $0.accountKey == info.recordKey })
-        if let existingIndex {
-            var existing = registry.accounts[existingIndex]
-            existing.chatgptAccountID = info.accountID
-            existing.chatgptUserID = info.userID
-            existing.email = info.email
-            existing.plan = info.plan
-            existing.authMode = "chatgpt"
-            registry.accounts[existingIndex] = existing
-        } else {
-            registry.accounts.append(
-                CodexAccount(
-                    accountKey: info.recordKey,
-                    chatgptAccountID: info.accountID,
-                    chatgptUserID: info.userID,
-                    email: info.email,
-                    alias: "",
-                    plan: info.plan,
-                    authMode: "chatgpt",
-                    createdAt: nowSeconds,
-                    lastUsedAt: nil,
-                    lastUsage: nil,
-                    lastUsageAt: nil,
-                    lastUsageStatus: nil,
-                    lastUsageErrorMessage: nil,
-                    lastLocalRollout: nil
+        switch try detectCredential(in: authData) {
+        case .auth(let info):
+            let destinationURL = accountAuthURL(for: info.recordKey)
+            try writeAtomically(data: authData, to: destinationURL)
+
+            let nowSeconds = Int64(Date().timeIntervalSince1970)
+            let existingIndex = registry.accounts.firstIndex(where: { $0.accountKey == info.recordKey })
+            if let existingIndex {
+                var existing = registry.accounts[existingIndex]
+                existing.chatgptAccountID = info.accountID
+                existing.chatgptUserID = info.userID
+                existing.email = info.email
+                existing.plan = info.plan
+                existing.authMode = "chatgpt"
+                registry.accounts[existingIndex] = existing
+            } else {
+                registry.accounts.append(
+                    CodexAccount(
+                        accountKey: info.recordKey,
+                        chatgptAccountID: info.accountID,
+                        chatgptUserID: info.userID,
+                        email: info.email,
+                        alias: "",
+                        plan: info.plan,
+                        authMode: "chatgpt",
+                        createdAt: nowSeconds,
+                        lastUsedAt: nil,
+                        lastUsage: nil,
+                        lastUsageAt: nil,
+                        lastUsageStatus: nil,
+                        lastUsageErrorMessage: nil,
+                        lastLocalRollout: nil
+                    )
                 )
+            }
+        case .apiKey(let info):
+            registry.apiKeyProfile = ApiKeyProfile(
+                apiKey: info.apiKey,
+                fingerprint: info.fingerprint,
+                sourcePath: sourceURL.path,
+                updatedAt: Int64(Date().timeIntervalSince1970)
             )
         }
 
@@ -843,32 +1014,81 @@ final class CodexAccountsStore: ObservableObject {
         isImporting = true
         defer { isImporting = false }
 
-        let previousActiveKey = try currentAuthAccountKey()
-        let previousActiveActivatedAtMs = try? loadOrCreateRegistry().activeAccountActivatedAtMs
+        let previousRegistry = try loadOrCreateRegistry()
+        let previousActiveActivatedAtMs = previousRegistry.activeAccountActivatedAtMs
 
         try syncCurrentAuthBestEffort()
 
-        guard let previousActiveKey else { return }
-        let importedActiveKey = try currentAuthAccountKey()
-        guard previousActiveKey != importedActiveKey else { return }
-
-        let previousSnapshotURL = accountAuthURL(for: previousActiveKey)
-        guard fileManager.fileExists(atPath: previousSnapshotURL.path) else {
-            throw StoreError.authSnapshotMissing(previousSnapshotURL.lastPathComponent)
-        }
-
-        try replaceItem(at: activeAuthURL, withItemAt: previousSnapshotURL)
-
         var registry = try loadOrCreateRegistry()
-        registry.activeAccountKey = previousActiveKey
-        registry.activeAccountActivatedAtMs = previousActiveActivatedAtMs ?? registry.activeAccountActivatedAtMs
+        switch previousRegistry.activeMode {
+        case .auth:
+            guard let previousActiveKey = previousRegistry.activeAccountKey else { return }
+            let imported = try currentCredential()
+            if case .auth(let importedInfo) = imported, importedInfo.recordKey == previousActiveKey {
+                return
+            }
+
+            let previousSnapshotURL = accountAuthURL(for: previousActiveKey)
+            guard fileManager.fileExists(atPath: previousSnapshotURL.path) else {
+                throw StoreError.authSnapshotMissing(previousSnapshotURL.lastPathComponent)
+            }
+
+            try replaceItem(at: activeAuthURL, withItemAt: previousSnapshotURL)
+            registry.activeMode = .auth
+            registry.activeAccountKey = previousActiveKey
+            registry.activeAccountActivatedAtMs = previousActiveActivatedAtMs ?? registry.activeAccountActivatedAtMs
+        case .apiKey:
+            guard let previousProfile = previousRegistry.apiKeyProfile else { return }
+            let imported = try currentCredential()
+            if case .apiKey(let importedInfo) = imported, importedInfo.apiKey == previousProfile.apiKey {
+                return
+            }
+            try writeAtomically(data: apiKeyAuthData(for: previousProfile.apiKey), to: activeAuthURL)
+            if let configData = try apiBaseURLConfigData(for: previousProfile.baseURL ?? "") {
+                try ensureAccountsDirectory()
+                try backupConfigIfNeeded(with: configData)
+                try fileManager.createDirectory(at: codexHomeURL, withIntermediateDirectories: true)
+                try writeAtomically(data: configData, to: codexConfigURL)
+            }
+            registry.activeMode = .apiKey
+            registry.apiKeyProfile = previousProfile
+        }
         try saveRegistry(registry)
+    }
+
+    private func currentCredential() throws -> DetectedCredential {
+        guard fileManager.fileExists(atPath: activeAuthURL.path) else {
+            throw StoreError.invalidAuthFile("当前没有 auth.json")
+        }
+        return try detectCredential(in: Data(contentsOf: activeAuthURL))
     }
 
     private func currentAuthAccountKey() throws -> String? {
         guard fileManager.fileExists(atPath: activeAuthURL.path) else { return nil }
         let authData = try Data(contentsOf: activeAuthURL)
-        return try parseAuthInfo(from: authData).recordKey
+        guard case .auth(let info) = try detectCredential(in: authData) else { return nil }
+        return info.recordKey
+    }
+
+    private func detectCredential(in data: Data) throws -> DetectedCredential {
+        let rootObject = try JSONSerialization.jsonObject(with: data)
+        guard let root = rootObject as? [String: Any] else {
+            throw StoreError.invalidAuthFile("auth.json 不是合法对象")
+        }
+        if root["tokens"] != nil {
+            return .auth(try parseAuthInfo(fromRoot: root))
+        }
+        if let apiKey = (root["OPENAI_API_KEY"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !apiKey.isEmpty {
+            return .apiKey(
+                ImportedAPIKeyInfo(
+                    apiKey: apiKey,
+                    fingerprint: maskAPIKey(apiKey),
+                    authMode: (root["auth_mode"] as? String) ?? "apikey"
+                )
+            )
+        }
+        throw StoreError.invalidAuthFile("缺少 tokens 或 OPENAI_API_KEY 字段")
     }
 
     private func parseAuthInfo(from data: Data) throws -> ImportedAuthInfo {
@@ -876,6 +1096,10 @@ final class CodexAccountsStore: ObservableObject {
         guard let root = rootObject as? [String: Any] else {
             throw StoreError.invalidAuthFile("auth.json 不是合法对象")
         }
+        return try parseAuthInfo(fromRoot: root)
+    }
+
+    private func parseAuthInfo(fromRoot root: [String: Any]) throws -> ImportedAuthInfo {
 
         guard let tokens = root["tokens"] as? [String: Any] else {
             throw StoreError.invalidAuthFile("缺少 tokens 字段")
@@ -918,6 +1142,236 @@ final class CodexAccountsStore: ObservableObject {
             refreshToken: refreshToken,
             accessTokenExpiresAtMs: accessTokenExpiresAtMs
         )
+    }
+
+    private func switchToAPIKey(_ apiKey: String, baseURL: String) throws {
+        var registry = try loadOrCreateRegistry()
+        let incoming = try apiKeyAuthData(for: apiKey)
+        if fileManager.fileExists(atPath: activeAuthURL.path) {
+            let tempURL = accountsDirectoryURL.appendingPathComponent(".incoming.api_key.json")
+            defer { try? fileManager.removeItem(at: tempURL) }
+            try writeAtomically(data: incoming, to: tempURL)
+            try backupActiveAuthIfNeeded(using: tempURL)
+        }
+        try writeAtomically(data: incoming, to: activeAuthURL)
+        if let configData = try apiBaseURLConfigData(for: baseURL) {
+            try ensureAccountsDirectory()
+            try backupConfigIfNeeded(with: configData)
+            try fileManager.createDirectory(at: codexHomeURL, withIntermediateDirectories: true)
+            try writeAtomically(data: configData, to: codexConfigURL)
+        }
+        registry.activeMode = .apiKey
+        registry.apiKeyProfile = ApiKeyProfile(
+            apiKey: apiKey,
+            fingerprint: maskAPIKey(apiKey),
+            sourcePath: activeAuthURL.path,
+            baseURL: baseURL.isEmpty ? nil : baseURL,
+            baseURLSourcePath: baseURL.isEmpty ? nil : codexConfigURL.path,
+            updatedAt: Int64(Date().timeIntervalSince1970)
+        )
+        try saveRegistry(registry)
+    }
+
+    private func performAuthSwitch(to account: CodexAccount) throws -> String? {
+        var registry = try loadRegistry()
+        guard registry.accounts.contains(where: { $0.accountKey == account.accountKey }) else {
+            throw StoreError.accountNotFound
+        }
+
+        let sourceURL = accountAuthURL(for: account.accountKey)
+        guard fileManager.fileExists(atPath: sourceURL.path) else {
+            throw StoreError.authSnapshotMissing(sourceURL.lastPathComponent)
+        }
+
+        try ensureAccountsDirectory()
+        try backupActiveAuthIfNeeded(using: sourceURL)
+        try replaceItem(at: activeAuthURL, withItemAt: sourceURL)
+
+        registry.activeMode = .auth
+        registry.activeAccountKey = account.accountKey
+        registry.activeAccountActivatedAtMs = Int64(Date().timeIntervalSince1970 * 1000)
+        let now = Int64(Date().timeIntervalSince1970)
+        registry.accounts = registry.accounts.map { existing in
+            var updated = existing
+            if updated.accountKey == account.accountKey {
+                updated.lastUsedAt = now
+            }
+            return updated
+        }
+
+        try saveRegistry(registry)
+
+        do {
+            try syncOpenCodeAuthIfNeeded(using: sourceURL, registry: registry)
+            return nil
+        } catch {
+            return "Codex 已切换，但 OpenCode 同步失败"
+        }
+    }
+
+    private func apiKeyAuthData(for apiKey: String) throws -> Data {
+        let object: [String: String] = [
+            "OPENAI_API_KEY": apiKey,
+            "auth_mode": "apikey"
+        ]
+        return try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
+    }
+
+    private func loadCurrentAPIBaseURL() throws -> String? {
+        guard fileManager.fileExists(atPath: codexConfigURL.path) else { return nil }
+        let content = try String(contentsOf: codexConfigURL, encoding: .utf8)
+        return extractProviderBaseURL(from: content)
+    }
+
+    private func extractProviderBaseURL(from content: String) -> String? {
+        let lines = content.components(separatedBy: .newlines)
+        var inProviderSection = false
+
+        for rawLine in lines {
+            let line = rawLine.trimmingCharacters(in: .whitespaces)
+            if line.hasPrefix("[") && line.hasSuffix("]") {
+                inProviderSection = line.hasPrefix("[model_providers.")
+                continue
+            }
+            guard inProviderSection else { continue }
+            guard line.hasPrefix("base_url") else { continue }
+            guard let equalsIndex = line.firstIndex(of: "=") else { continue }
+            let valuePart = line[line.index(after: equalsIndex)...].trimmingCharacters(in: .whitespaces)
+            guard valuePart.hasPrefix("\""), valuePart.count >= 2 else { continue }
+            let body = valuePart.dropFirst()
+            guard let closingQuote = body.firstIndex(of: "\"") else { continue }
+            let value = String(body[..<closingQuote]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !value.isEmpty {
+                return value
+            }
+        }
+        return nil
+    }
+
+    private func apiBaseURLConfigData(for baseURL: String) throws -> Data? {
+        let trimmed = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        var content = ""
+        if fileManager.fileExists(atPath: codexConfigURL.path) {
+            content = try String(contentsOf: codexConfigURL, encoding: .utf8)
+        }
+        let updatedContent = upsertProviderBaseURL(in: content, baseURL: trimmed)
+        return Data(updatedContent.utf8)
+    }
+
+    private func upsertProviderBaseURL(in content: String, baseURL: String) -> String {
+        var lines = content.components(separatedBy: .newlines)
+        if lines.count == 1 && lines[0].isEmpty {
+            lines = []
+        }
+
+        var sectionStartIndex: Int?
+        var sectionEndIndex = lines.count
+        var baseURLLineIndex: Int?
+
+        for index in lines.indices {
+            let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("[") && trimmed.hasSuffix("]") {
+                if let start = sectionStartIndex, index > start {
+                    sectionEndIndex = index
+                    break
+                }
+                if trimmed.hasPrefix("[model_providers.") {
+                    sectionStartIndex = index
+                    sectionEndIndex = lines.count
+                }
+                continue
+            }
+
+            if let start = sectionStartIndex, index > start, trimmed.hasPrefix("base_url") {
+                baseURLLineIndex = index
+            }
+        }
+
+        let newLine = "base_url = \"\(baseURL)\""
+
+        if let lineIndex = baseURLLineIndex {
+            lines[lineIndex] = newLine
+        } else if let start = sectionStartIndex {
+            let insertIndex = min(sectionEndIndex, max(start + 1, 0))
+            lines.insert(newLine, at: insertIndex)
+        } else {
+            if !lines.isEmpty, !lines.last!.isEmpty {
+                lines.append("")
+            }
+            lines.append("[model_providers.openai]")
+            lines.append(newLine)
+        }
+
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    private func loadLatestAPIKeyProfile() throws -> ApiKeyProfile? {
+        if fileManager.fileExists(atPath: activeAuthURL.path),
+           case .apiKey(let info) = try detectCredential(in: Data(contentsOf: activeAuthURL)) {
+            let baseURL = try loadCurrentAPIBaseURL()
+            return ApiKeyProfile(
+                apiKey: info.apiKey,
+                fingerprint: info.fingerprint,
+                sourcePath: activeAuthURL.path,
+                baseURL: baseURL,
+                baseURLSourcePath: baseURL == nil ? nil : codexConfigURL.path,
+                updatedAt: Int64(Date().timeIntervalSince1970)
+            )
+        }
+
+        let backupURLs = try fileManager.contentsOfDirectory(at: accountsDirectoryURL, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles])
+            .filter { $0.lastPathComponent.contains("auth.api_key.bak.") || $0.lastPathComponent.contains("auth.apikey.bak.") }
+            .sorted { lhs, rhs in
+                let leftDate = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                let rightDate = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                return leftDate > rightDate
+            }
+
+        for url in backupURLs {
+            let data = try Data(contentsOf: url)
+            if case .apiKey(let info) = try detectCredential(in: data) {
+                let baseURL = try loadLatestAPIBaseURLFromBackups()
+                return ApiKeyProfile(
+                    apiKey: info.apiKey,
+                    fingerprint: info.fingerprint,
+                    sourcePath: url.path,
+                    baseURL: baseURL?.value,
+                    baseURLSourcePath: baseURL?.path,
+                    updatedAt: Int64(Date().timeIntervalSince1970)
+                )
+            }
+        }
+        return nil
+    }
+
+    private func loadLatestAPIBaseURLFromBackups() throws -> (value: String, path: String)? {
+        if let current = try loadCurrentAPIBaseURL() {
+            return (current, codexConfigURL.path)
+        }
+
+        guard fileManager.fileExists(atPath: accountsDirectoryURL.path) else { return nil }
+        let backupURLs = try fileManager.contentsOfDirectory(at: accountsDirectoryURL, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles])
+            .filter { $0.lastPathComponent.hasPrefix("config.bak.") && $0.pathExtension == "toml" }
+            .sorted { lhs, rhs in
+                let leftDate = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                let rightDate = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                return leftDate > rightDate
+            }
+
+        for url in backupURLs {
+            let content = try String(contentsOf: url, encoding: .utf8)
+            if let baseURL = extractProviderBaseURL(from: content) {
+                return (baseURL, url.path)
+            }
+        }
+        return nil
+    }
+
+    private func maskAPIKey(_ apiKey: String) -> String {
+        guard apiKey.count > 8 else { return apiKey }
+        return "\(apiKey.prefix(4))...\(apiKey.suffix(4))"
     }
 
     private func decodeJWTPayload(_ jwt: String) throws -> [String: Any] {
@@ -1111,6 +1565,26 @@ private struct ImportedAuthInfo {
     let accessToken: String?
     let refreshToken: String?
     let accessTokenExpiresAtMs: Int64?
+}
+
+private struct ImportedAPIKeyInfo {
+    let apiKey: String
+    let fingerprint: String
+    let authMode: String
+}
+
+private enum DetectedCredential {
+    case auth(ImportedAuthInfo)
+    case apiKey(ImportedAPIKeyInfo)
+
+    var mode: CredentialMode {
+        switch self {
+        case .auth:
+            return .auth
+        case .apiKey:
+            return .apiKey
+        }
+    }
 }
 
 private struct OpenCodeAuthPayload: Codable {
