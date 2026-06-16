@@ -70,55 +70,48 @@ struct MenuContentView: View {
 
     private var header: some View {
         HStack(alignment: .top) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Codex Switch")
-                    .font(.system(size: 16, weight: .semibold))
-                Text(store.activeSummaryText)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-            }
+            Text("Codex Switch")
+                .font(.system(size: 16, weight: .semibold))
 
             Spacer()
-
-            if store.selectedMode == .auth {
-                VStack(alignment: .trailing, spacing: 4) {
-                    Toggle(isOn: Binding(
-                        get: { store.syncOpenCodeOnSwitch },
-                        set: { store.setSyncOpenCodeOnSwitch($0) }
-                    )) {
-                        EmptyView()
-                    }
-                    .toggleStyle(.switch)
-                    .labelsHidden()
-                    .disabled(!store.isOpenCodeInstalled)
-
-                    Text("同步 OpenCode")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.secondary)
-
-                    if !store.isOpenCodeInstalled {
-                        Text("未检测到 OpenCode")
-                            .font(.system(size: 10))
-                            .foregroundStyle(.secondary)
-                    }
-                }
-            }
         }
     }
 
     private var authActionBar: some View {
-        HStack(spacing: 8) {
-            actionButton("导入当前配置", systemImage: "square.and.arrow.down") {
-                store.importCurrentAuth()
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                actionButton("导入当前配置", systemImage: "square.and.arrow.down") {
+                    store.importCurrentAuth()
+                }
+
+                actionButton("添加账号", systemImage: "plus.circle") {
+                    store.addNewAccount()
+                }
+
+                actionButton("刷新用量", systemImage: "arrow.clockwise") {
+                    store.refreshAllUsage()
+                }
             }
 
-            actionButton("添加账号", systemImage: "plus.circle") {
-                store.addNewAccount()
-            }
+            HStack(spacing: 8) {
+                Toggle(isOn: Binding(
+                    get: { store.syncOpenCodeOnSwitch },
+                    set: { store.setSyncOpenCodeOnSwitch($0) }
+                )) {
+                    Text("同步 OpenCode")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+                .toggleStyle(.switch)
+                .disabled(!store.isOpenCodeInstalled)
 
-            actionButton("刷新用量", systemImage: "arrow.clockwise") {
-                store.refreshAllUsage()
+                if !store.isOpenCodeInstalled {
+                    Text("未检测到 OpenCode")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                }
             }
+            .padding(.horizontal, 2)
         }
     }
 
@@ -139,6 +132,7 @@ struct MenuContentView: View {
 
     private func modeTab(title: String, mode: CredentialMode) -> some View {
         let isSelected = store.selectedMode == mode
+        let isActiveMode = store.activeMode == mode
         return Button {
             store.selectMode(mode)
             if mode == .apiKey {
@@ -148,6 +142,7 @@ struct MenuContentView: View {
         } label: {
             Text(title)
                 .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(isActiveMode ? Color.green : Color.primary)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 8)
         }
