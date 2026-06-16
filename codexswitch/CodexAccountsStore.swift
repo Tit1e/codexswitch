@@ -18,6 +18,7 @@ final class CodexAccountsStore: ObservableObject {
     @Published var pendingAuthAccountKey: String?
     @Published var draftAPIKey: String = ""
     @Published var draftAPIBaseURL: String = ""
+    @Published private(set) var activeAPIProviderID: String?
     @Published private(set) var activeAPIKeyFingerprint: String?
     @Published private(set) var apiKeySourceDescription: String?
     @Published private(set) var apiBaseURLSourceDescription: String?
@@ -48,6 +49,7 @@ final class CodexAccountsStore: ObservableObject {
     private var lastUsageRefreshAt: Date?
     private var activeAPIKeyValue: String?
     private var activeAPIBaseURLValue: String?
+    private var activeAPIProviderIDValue: String?
     private var hasInitializedSelectedMode = false
     private let isOpenCodeCommandAvailable: () -> Bool
 
@@ -110,8 +112,8 @@ final class CodexAccountsStore: ObservableObject {
             }
             return "当前没有激活授权"
         case .apiKey:
-            if let activeAPIKeyFingerprint, let activeAPIBaseURLValue, !activeAPIBaseURLValue.isEmpty {
-                return "当前：API Key · \(activeAPIKeyFingerprint) · \(activeAPIBaseURLValue)"
+            if let activeAPIProviderIDValue, let activeAPIKeyFingerprint {
+                return "当前：API Key · \(activeAPIProviderIDValue) · \(activeAPIKeyFingerprint)"
             }
             if let activeAPIKeyFingerprint {
                 return "当前：API Key · \(activeAPIKeyFingerprint)"
@@ -127,8 +129,8 @@ final class CodexAccountsStore: ObservableObject {
             return activeMode != .auth || pendingAuthAccountKey != activeAccountKey
         case .apiKey:
             let trimmed = draftAPIKey.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return false }
             let trimmedBaseURL = normalizedAPIBaseURLDraft()
+            guard !trimmed.isEmpty else { return false }
             return activeMode != .apiKey
                 || trimmed != (activeAPIKeyValue ?? "")
                 || trimmedBaseURL != (activeAPIBaseURLValue ?? "")
@@ -158,6 +160,8 @@ final class CodexAccountsStore: ObservableObject {
             activeAccountKey = registry.activeAccountKey
             activeAPIKeyValue = registry.apiKeyProfile?.apiKey
             activeAPIBaseURLValue = registry.apiKeyProfile?.baseURL
+            activeAPIProviderIDValue = registry.apiKeyProfile?.providerID
+            activeAPIProviderID = registry.apiKeyProfile?.providerID
             activeAPIKeyFingerprint = registry.apiKeyProfile?.fingerprint
             selectedMode = hasInitializedSelectedMode ? previousSelectedMode : registry.activeMode
             pendingAuthAccountKey = previousPendingAuthAccountKey ?? registry.activeAccountKey ?? accounts.first?.accountKey
@@ -185,6 +189,8 @@ final class CodexAccountsStore: ObservableObject {
             draftAPIBaseURL = ""
             activeAPIKeyValue = nil
             activeAPIBaseURLValue = nil
+            activeAPIProviderIDValue = nil
+            activeAPIProviderID = nil
             activeAPIKeyFingerprint = nil
             apiKeySourceDescription = nil
             apiBaseURLSourceDescription = nil
@@ -239,6 +245,9 @@ final class CodexAccountsStore: ObservableObject {
                     draftAPIBaseURL = profile.baseURL ?? ""
                     apiKeySourceDescription = profile.sourcePath
                     apiBaseURLSourceDescription = profile.baseURLSourcePath
+                } else if let providerConfig = try loadCurrentAPIProviderConfig() {
+                    draftAPIBaseURL = providerConfig.baseURL
+                    apiBaseURLSourceDescription = codexConfigURL.path
                 }
             } catch {
                 errorMessage = error.localizedDescription
@@ -536,6 +545,9 @@ final class CodexAccountsStore: ObservableObject {
         draftAPIBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
+    private var officialProviderID: String { "openai" }
+    private let providerSectionPrefix = "[model_providers."
+
     private func backupActiveAuthIfNeeded(using sourceURL: URL) throws {
         guard fileManager.fileExists(atPath: activeAuthURL.path) else { return }
         let current = try Data(contentsOf: activeAuthURL)
@@ -546,11 +558,12 @@ final class CodexAccountsStore: ObservableObject {
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyyMMdd-HHmmss"
         let modeSuffix = (try? detectCredential(in: current).mode.rawValue) ?? "unknown"
+        try removeExistingAuthBackups(for: modeSuffix)
         let backupURL = accountsDirectoryURL.appendingPathComponent("auth.\(modeSuffix).bak.\(formatter.string(from: .now)).json")
         try current.write(to: backupURL, options: .atomic)
     }
 
-    private func backupConfigIfNeeded(with incomingData: Data) throws {
+    private func backupConfigIfNeeded(with incomingData: Data, backupKind: ConfigBackupKind) throws {
         guard fileManager.fileExists(atPath: codexConfigURL.path) else { return }
         let current = try Data(contentsOf: codexConfigURL)
         guard current != incomingData else { return }
@@ -558,8 +571,29 @@ final class CodexAccountsStore: ObservableObject {
         let formatter = DateFormatter()
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateFormat = "yyyyMMdd-HHmmss"
-        let backupURL = accountsDirectoryURL.appendingPathComponent("config.bak.\(formatter.string(from: .now)).toml")
+        try removeExistingConfigBackups(for: backupKind)
+        let backupURL = accountsDirectoryURL.appendingPathComponent("config.\(backupKind.rawValue).bak.\(formatter.string(from: .now)).toml")
         try current.write(to: backupURL, options: .atomic)
+    }
+
+    private func removeExistingAuthBackups(for modeSuffix: String) throws {
+        guard fileManager.fileExists(atPath: accountsDirectoryURL.path) else { return }
+        let backupURLs = try fileManager.contentsOfDirectory(at: accountsDirectoryURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+            .filter { $0.lastPathComponent.hasPrefix("auth.\(modeSuffix).bak.") && $0.pathExtension == "json" }
+
+        for url in backupURLs {
+            try fileManager.removeItem(at: url)
+        }
+    }
+
+    private func removeExistingConfigBackups(for backupKind: ConfigBackupKind) throws {
+        guard fileManager.fileExists(atPath: accountsDirectoryURL.path) else { return }
+        let backupURLs = try fileManager.contentsOfDirectory(at: accountsDirectoryURL, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+            .filter { $0.lastPathComponent.hasPrefix("config.\(backupKind.rawValue).bak.") && $0.pathExtension == "toml" }
+
+        for url in backupURLs {
+            try fileManager.removeItem(at: url)
+        }
     }
 
     private func replaceItem(at destinationURL: URL, withItemAt sourceURL: URL) throws {
@@ -636,14 +670,15 @@ final class CodexAccountsStore: ObservableObject {
                 registry.accounts[activeIndex].lastUsedAt = nowSeconds
             }
         case .apiKey(let info):
-            let currentBaseURL = try loadCurrentAPIBaseURL()
+            let providerConfig = try loadCurrentAPIProviderConfig()
             registry.activeMode = .apiKey
             registry.apiKeyProfile = ApiKeyProfile(
                 apiKey: info.apiKey,
                 fingerprint: info.fingerprint,
+                providerID: providerConfig?.providerID,
                 sourcePath: activeAuthURL.path,
-                baseURL: currentBaseURL,
-                baseURLSourcePath: currentBaseURL == nil ? nil : codexConfigURL.path,
+                baseURL: providerConfig?.baseURL,
+                baseURLSourcePath: providerConfig == nil ? nil : codexConfigURL.path,
                 updatedAt: Int64(Date().timeIntervalSince1970)
             )
         }
@@ -1044,12 +1079,14 @@ final class CodexAccountsStore: ObservableObject {
                 return
             }
             try writeAtomically(data: apiKeyAuthData(for: previousProfile.apiKey), to: activeAuthURL)
-            if let configData = try apiBaseURLConfigData(for: previousProfile.baseURL ?? "") {
-                try ensureAccountsDirectory()
-                try backupConfigIfNeeded(with: configData)
-                try fileManager.createDirectory(at: codexHomeURL, withIntermediateDirectories: true)
-                try writeAtomically(data: configData, to: codexConfigURL)
-            }
+            let configData = try apiKeyModeConfigData(
+                providerID: try resolveAPIKeyProviderID(from: previousProfile),
+                baseURL: previousProfile.baseURL ?? ""
+            )
+            try ensureAccountsDirectory()
+            try backupConfigIfNeeded(with: configData, backupKind: .auth)
+            try fileManager.createDirectory(at: codexHomeURL, withIntermediateDirectories: true)
+            try writeAtomically(data: configData, to: codexConfigURL)
             registry.activeMode = .apiKey
             registry.apiKeyProfile = previousProfile
         }
@@ -1146,6 +1183,13 @@ final class CodexAccountsStore: ObservableObject {
 
     private func switchToAPIKey(_ apiKey: String, baseURL: String) throws {
         var registry = try loadOrCreateRegistry()
+        let fallbackProfile: ApiKeyProfile?
+        if let profile = registry.apiKeyProfile {
+            fallbackProfile = profile
+        } else {
+            fallbackProfile = try loadLatestAPIKeyProfile()
+        }
+        let providerID = try resolveAPIKeyProviderID(from: fallbackProfile)
         let incoming = try apiKeyAuthData(for: apiKey)
         if fileManager.fileExists(atPath: activeAuthURL.path) {
             let tempURL = accountsDirectoryURL.appendingPathComponent(".incoming.api_key.json")
@@ -1154,19 +1198,19 @@ final class CodexAccountsStore: ObservableObject {
             try backupActiveAuthIfNeeded(using: tempURL)
         }
         try writeAtomically(data: incoming, to: activeAuthURL)
-        if let configData = try apiBaseURLConfigData(for: baseURL) {
-            try ensureAccountsDirectory()
-            try backupConfigIfNeeded(with: configData)
-            try fileManager.createDirectory(at: codexHomeURL, withIntermediateDirectories: true)
-            try writeAtomically(data: configData, to: codexConfigURL)
-        }
+        let configData = try apiKeyModeConfigData(providerID: providerID, baseURL: baseURL)
+        try ensureAccountsDirectory()
+        try backupConfigIfNeeded(with: configData, backupKind: .apiKey)
+        try fileManager.createDirectory(at: codexHomeURL, withIntermediateDirectories: true)
+        try writeAtomically(data: configData, to: codexConfigURL)
         registry.activeMode = .apiKey
         registry.apiKeyProfile = ApiKeyProfile(
             apiKey: apiKey,
             fingerprint: maskAPIKey(apiKey),
+            providerID: providerID,
             sourcePath: activeAuthURL.path,
-            baseURL: baseURL.isEmpty ? nil : baseURL,
-            baseURLSourcePath: baseURL.isEmpty ? nil : codexConfigURL.path,
+            baseURL: baseURL,
+            baseURLSourcePath: codexConfigURL.path,
             updatedAt: Int64(Date().timeIntervalSince1970)
         )
         try saveRegistry(registry)
@@ -1186,6 +1230,10 @@ final class CodexAccountsStore: ObservableObject {
         try ensureAccountsDirectory()
         try backupActiveAuthIfNeeded(using: sourceURL)
         try replaceItem(at: activeAuthURL, withItemAt: sourceURL)
+        let configData = try officialModeConfigData()
+        try backupConfigIfNeeded(with: configData, backupKind: .auth)
+        try fileManager.createDirectory(at: codexHomeURL, withIntermediateDirectories: true)
+        try writeAtomically(data: configData, to: codexConfigURL)
 
         registry.activeMode = .auth
         registry.activeAccountKey = account.accountKey
@@ -1217,20 +1265,22 @@ final class CodexAccountsStore: ObservableObject {
         return try JSONSerialization.data(withJSONObject: object, options: [.prettyPrinted, .sortedKeys])
     }
 
-    private func loadCurrentAPIBaseURL() throws -> String? {
+    private func loadCurrentAPIProviderConfig() throws -> APIProviderConfig? {
         guard fileManager.fileExists(atPath: codexConfigURL.path) else { return nil }
         let content = try String(contentsOf: codexConfigURL, encoding: .utf8)
-        return extractProviderBaseURL(from: content)
+        let providerID = try resolveAPIKeyProviderID(from: nil, configContent: content)
+        let baseURL = try extractProviderBaseURL(from: content, providerID: providerID)
+        return APIProviderConfig(providerID: providerID, baseURL: baseURL)
     }
 
-    private func extractProviderBaseURL(from content: String) -> String? {
+    private func extractProviderBaseURL(from content: String, providerID: String) throws -> String {
         let lines = content.components(separatedBy: .newlines)
         var inProviderSection = false
 
         for rawLine in lines {
             let line = rawLine.trimmingCharacters(in: .whitespaces)
             if line.hasPrefix("[") && line.hasSuffix("]") {
-                inProviderSection = line.hasPrefix("[model_providers.")
+                inProviderSection = line == "\(providerSectionPrefix)\(providerID)]"
                 continue
             }
             guard inProviderSection else { continue }
@@ -1245,78 +1295,54 @@ final class CodexAccountsStore: ObservableObject {
                 return value
             }
         }
-        return nil
+        throw StoreError.missingProviderConfiguration("未找到 provider `\(providerID)` 的 base_url 配置")
     }
 
-    private func apiBaseURLConfigData(for baseURL: String) throws -> Data? {
-        let trimmed = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return nil }
-
-        var content = ""
-        if fileManager.fileExists(atPath: codexConfigURL.path) {
-            content = try String(contentsOf: codexConfigURL, encoding: .utf8)
+    private func officialModeConfigData() throws -> Data {
+        let content = try loadCurrentConfigContent()
+        let updated = updatingConfig(content) { lines in
+            var result = removeTopLevelAssignments(in: lines, keys: ["openai_base_url", "chatgpt_base_url"])
+            upsertTopLevelAssignment(in: &result, key: "model_provider", value: "\"\(officialProviderID)\"")
+            return result
         }
-        let updatedContent = upsertProviderBaseURL(in: content, baseURL: trimmed)
-        return Data(updatedContent.utf8)
+        return Data(updated.utf8)
     }
 
-    private func upsertProviderBaseURL(in content: String, baseURL: String) -> String {
-        var lines = content.components(separatedBy: .newlines)
-        if lines.count == 1 && lines[0].isEmpty {
-            lines = []
+    private func apiKeyModeConfigData(providerID: String, baseURL: String) throws -> Data {
+        let trimmedBaseURL = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedBaseURL.isEmpty else {
+            throw StoreError.invalidConfigFile("API Key 模式需要填写请求地址")
         }
 
-        var sectionStartIndex: Int?
-        var sectionEndIndex = lines.count
-        var baseURLLineIndex: Int?
-
-        for index in lines.indices {
-            let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
-            if trimmed.hasPrefix("[") && trimmed.hasSuffix("]") {
-                if let start = sectionStartIndex, index > start {
-                    sectionEndIndex = index
-                    break
-                }
-                if trimmed.hasPrefix("[model_providers.") {
-                    sectionStartIndex = index
-                    sectionEndIndex = lines.count
-                }
-                continue
-            }
-
-            if let start = sectionStartIndex, index > start, trimmed.hasPrefix("base_url") {
-                baseURLLineIndex = index
-            }
+        let content = try loadCurrentConfigContent()
+        let updated = updatingConfig(content) { lines in
+            var result = lines
+            upsertTopLevelAssignment(in: &result, key: "model_provider", value: "\"\(providerID)\"")
+            upsertProviderAssignments(
+                in: &result,
+                providerID: providerID,
+                assignments: [
+                    "base_url = \"\(trimmedBaseURL)\"",
+                    "requires_openai_auth = true",
+                    "wire_api = \"responses\""
+                ]
+            )
+            return result
         }
-
-        let newLine = "base_url = \"\(baseURL)\""
-
-        if let lineIndex = baseURLLineIndex {
-            lines[lineIndex] = newLine
-        } else if let start = sectionStartIndex {
-            let insertIndex = min(sectionEndIndex, max(start + 1, 0))
-            lines.insert(newLine, at: insertIndex)
-        } else {
-            if !lines.isEmpty, !lines.last!.isEmpty {
-                lines.append("")
-            }
-            lines.append("[model_providers.openai]")
-            lines.append(newLine)
-        }
-
-        return lines.joined(separator: "\n") + "\n"
+        return Data(updated.utf8)
     }
 
     private func loadLatestAPIKeyProfile() throws -> ApiKeyProfile? {
         if fileManager.fileExists(atPath: activeAuthURL.path),
            case .apiKey(let info) = try detectCredential(in: Data(contentsOf: activeAuthURL)) {
-            let baseURL = try loadCurrentAPIBaseURL()
+            let providerConfig = try loadCurrentAPIProviderConfig()
             return ApiKeyProfile(
                 apiKey: info.apiKey,
                 fingerprint: info.fingerprint,
+                providerID: providerConfig?.providerID,
                 sourcePath: activeAuthURL.path,
-                baseURL: baseURL,
-                baseURLSourcePath: baseURL == nil ? nil : codexConfigURL.path,
+                baseURL: providerConfig?.baseURL,
+                baseURLSourcePath: providerConfig == nil ? nil : codexConfigURL.path,
                 updatedAt: Int64(Date().timeIntervalSince1970)
             )
         }
@@ -1332,13 +1358,14 @@ final class CodexAccountsStore: ObservableObject {
         for url in backupURLs {
             let data = try Data(contentsOf: url)
             if case .apiKey(let info) = try detectCredential(in: data) {
-                let baseURL = try loadLatestAPIBaseURLFromBackups()
+                let providerConfig = try loadLatestAPIProviderConfigFromBackups()
                 return ApiKeyProfile(
                     apiKey: info.apiKey,
                     fingerprint: info.fingerprint,
+                    providerID: providerConfig?.providerID,
                     sourcePath: url.path,
-                    baseURL: baseURL?.value,
-                    baseURLSourcePath: baseURL?.path,
+                    baseURL: providerConfig?.baseURL,
+                    baseURLSourcePath: providerConfig?.path,
                     updatedAt: Int64(Date().timeIntervalSince1970)
                 )
             }
@@ -1346,14 +1373,19 @@ final class CodexAccountsStore: ObservableObject {
         return nil
     }
 
-    private func loadLatestAPIBaseURLFromBackups() throws -> (value: String, path: String)? {
-        if let current = try loadCurrentAPIBaseURL() {
-            return (current, codexConfigURL.path)
+    private func loadLatestAPIProviderConfigFromBackups() throws -> (providerID: String, baseURL: String, path: String)? {
+        if let current = try loadCurrentAPIProviderConfig() {
+            return (current.providerID, current.baseURL, codexConfigURL.path)
         }
 
+        return try loadLatestAPIProviderConfigBackupOnly()
+    }
+
+    private func loadLatestAPIProviderConfigBackupOnly() throws -> (providerID: String, baseURL: String, path: String)? {
         guard fileManager.fileExists(atPath: accountsDirectoryURL.path) else { return nil }
+
         let backupURLs = try fileManager.contentsOfDirectory(at: accountsDirectoryURL, includingPropertiesForKeys: [.contentModificationDateKey], options: [.skipsHiddenFiles])
-            .filter { $0.lastPathComponent.hasPrefix("config.bak.") && $0.pathExtension == "toml" }
+            .filter { $0.lastPathComponent.hasPrefix("config.api_key.bak.") && $0.pathExtension == "toml" }
             .sorted { lhs, rhs in
                 let leftDate = (try? lhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
                 let rightDate = (try? rhs.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
@@ -1362,11 +1394,179 @@ final class CodexAccountsStore: ObservableObject {
 
         for url in backupURLs {
             let content = try String(contentsOf: url, encoding: .utf8)
-            if let baseURL = extractProviderBaseURL(from: content) {
-                return (baseURL, url.path)
+            if let providerID = try? resolveAPIKeyProviderID(from: nil, configContent: content),
+               let baseURL = try? extractProviderBaseURL(from: content, providerID: providerID) {
+                return (providerID, baseURL, url.path)
             }
         }
         return nil
+    }
+
+    private func resolveAPIKeyProviderID(from profile: ApiKeyProfile?, configContent: String? = nil) throws -> String {
+        if let providerID = profile?.providerID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !providerID.isEmpty,
+           providerID != officialProviderID {
+            return providerID
+        }
+
+        let content: String
+        if let configContent {
+            content = configContent
+        } else {
+            content = try loadCurrentConfigContent()
+        }
+
+        if let currentProviderID = loadCurrentModelProviderID(from: content),
+           currentProviderID != officialProviderID {
+            return currentProviderID
+        }
+
+        if let fallbackProviderID = findFirstProxyProviderID(in: content) {
+            return fallbackProviderID
+        }
+
+        if configContent == nil,
+           let backupProviderID = try loadLatestAPIProviderConfigBackupOnly()?.providerID {
+            return backupProviderID
+        }
+
+        throw StoreError.missingProviderConfiguration("没有找到可用于 API Key 模式的 provider 配置")
+    }
+
+    private func loadCurrentModelProviderID(from content: String) -> String? {
+        topLevelAssignmentValue(for: "model_provider", in: content)
+    }
+
+    private func findFirstProxyProviderID(in content: String) -> String? {
+        for line in content.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix(providerSectionPrefix), trimmed.hasSuffix("]") else { continue }
+            let providerID = String(trimmed.dropFirst(providerSectionPrefix.count).dropLast())
+            guard providerID != officialProviderID else { continue }
+            if (try? extractProviderBaseURL(from: content, providerID: providerID)) != nil {
+                return providerID
+            }
+        }
+        return nil
+    }
+
+    private func loadCurrentConfigContent() throws -> String {
+        guard fileManager.fileExists(atPath: codexConfigURL.path) else { return "" }
+        return try String(contentsOf: codexConfigURL, encoding: .utf8)
+    }
+
+    private func topLevelAssignmentValue(for key: String, in content: String) -> String? {
+        for line in content.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("[") && trimmed.hasSuffix("]") {
+                continue
+            }
+            guard trimmed.hasPrefix("\(key) =") else { continue }
+            let parts = trimmed.split(separator: "=", maxSplits: 1).map(String.init)
+            guard parts.count == 2 else { continue }
+            return unquoted(parts[1].trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+        return nil
+    }
+
+    private func unquoted(_ value: String) -> String {
+        guard value.count >= 2, value.first == "\"", value.last == "\"" else { return value }
+        return String(value.dropFirst().dropLast())
+    }
+
+    private func updatingConfig(_ content: String, transform: ([String]) -> [String]) -> String {
+        var lines = content.components(separatedBy: .newlines)
+        if lines.count == 1 && lines[0].isEmpty {
+            lines = []
+        }
+        let updated = transform(lines)
+        if updated.isEmpty {
+            return ""
+        }
+        return updated.joined(separator: "\n") + "\n"
+    }
+
+    private func removeTopLevelAssignments(in lines: [String], keys: Set<String>) -> [String] {
+        var result = [String]()
+        var inSection = false
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("[") && trimmed.hasSuffix("]") {
+                inSection = true
+                result.append(line)
+                continue
+            }
+            if !inSection, let key = assignmentKey(from: trimmed), keys.contains(key) {
+                continue
+            }
+            result.append(line)
+        }
+        return result
+    }
+
+    private func upsertTopLevelAssignment(in lines: inout [String], key: String, value: String) {
+        var insertIndex = 0
+        for index in lines.indices {
+            let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("[") && trimmed.hasSuffix("]") {
+                insertIndex = index
+                break
+            }
+            if assignmentKey(from: trimmed) == key {
+                lines[index] = "\(key) = \(value)"
+                return
+            }
+            insertIndex = index + 1
+        }
+        lines.insert("\(key) = \(value)", at: insertIndex)
+    }
+
+    private func upsertProviderAssignments(in lines: inout [String], providerID: String, assignments: [String]) {
+        let header = "\(providerSectionPrefix)\(providerID)]"
+        var sectionStart: Int?
+        var sectionEnd = lines.count
+
+        for index in lines.indices {
+            let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
+            guard trimmed.hasPrefix("[") && trimmed.hasSuffix("]") else { continue }
+            if trimmed == header {
+                sectionStart = index
+                continue
+            }
+            if let start = sectionStart, index > start {
+                sectionEnd = index
+                break
+            }
+        }
+
+        if let start = sectionStart {
+            var sectionLines = Array(lines[start..<sectionEnd])
+            for assignment in assignments {
+                guard let key = assignmentKey(from: assignment) else { continue }
+                if let existingIndex = sectionLines.indices.first(where: { assignmentKey(from: sectionLines[$0].trimmingCharacters(in: .whitespaces)) == key }) {
+                    sectionLines[existingIndex] = assignment
+                } else {
+                    sectionLines.append(assignment)
+                }
+            }
+            lines.replaceSubrange(start..<sectionEnd, with: sectionLines)
+            return
+        }
+
+        if !lines.isEmpty, !lines.last!.isEmpty {
+            lines.append("")
+        }
+        lines.append(header)
+        lines.append(contentsOf: assignments)
+    }
+
+    private func assignmentKey(from line: String) -> String? {
+        guard !line.isEmpty, !line.hasPrefix("#"), !line.hasPrefix("["),
+              let equalsIndex = line.firstIndex(of: "=") else {
+            return nil
+        }
+        return line[..<equalsIndex].trimmingCharacters(in: .whitespaces)
     }
 
     private func maskAPIKey(_ apiKey: String) -> String {
@@ -1529,6 +1729,8 @@ enum StoreError: LocalizedError {
     case accountNotFound
     case authSnapshotMissing(String)
     case invalidAuthFile(String)
+    case invalidConfigFile(String)
+    case missingProviderConfiguration(String)
     case invalidOpenCodeAuth(String)
     case updateCheckFailed(String)
     case updateAssetMissing
@@ -1544,6 +1746,10 @@ enum StoreError: LocalizedError {
             return "未找到账号快照文件: \(filename)"
         case .invalidAuthFile(let reason):
             return "auth.json 无法导入: \(reason)"
+        case .invalidConfigFile(let reason):
+            return "config.toml 无法保存: \(reason)"
+        case .missingProviderConfiguration(let reason):
+            return reason
         case .invalidOpenCodeAuth(let reason):
             return "OpenCode 认证信息无效: \(reason)"
         case .updateCheckFailed(let reason):
@@ -1565,6 +1771,16 @@ private struct ImportedAuthInfo {
     let accessToken: String?
     let refreshToken: String?
     let accessTokenExpiresAtMs: Int64?
+}
+
+private struct APIProviderConfig {
+    let providerID: String
+    let baseURL: String
+}
+
+private enum ConfigBackupKind: String {
+    case auth
+    case apiKey = "api_key"
 }
 
 private struct ImportedAPIKeyInfo {

@@ -122,6 +122,7 @@ struct RolloutSignature: Codable {
 struct ApiKeyProfile: Codable, Equatable {
     var apiKey: String
     var fingerprint: String
+    var providerID: String?
     var sourcePath: String?
     var baseURL: String?
     var baseURLSourcePath: String?
@@ -130,6 +131,7 @@ struct ApiKeyProfile: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case apiKey = "api_key"
         case fingerprint
+        case providerID = "provider_id"
         case sourcePath = "source_path"
         case baseURL = "base_url"
         case baseURLSourcePath = "base_url_source_path"

@@ -200,6 +200,12 @@ struct MenuContentView: View {
             ))
             .textFieldStyle(.roundedBorder)
 
+            if let providerID = store.activeAPIProviderID, !providerID.isEmpty {
+                Text("当前代理：\(providerID)")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+            }
+
             Text("API Key 模式不支持用量读取")
                 .font(.system(size: 10))
                 .foregroundStyle(.secondary)
